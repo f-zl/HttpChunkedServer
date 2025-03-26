@@ -408,6 +408,7 @@ static void on_post_param(Connection *c, int request_len, int32_t content_len) {
   const unsigned char *body = &c->buf[request_len];
   const uint16_t addr = ReadUint16LE(body);
   const int32_t value_len = content_len - header_len;
+  LOG_D("POST /param(%d,%d)\n", addr, value_len);
   if ((size_t)addr + (size_t)value_len <= sizeof(Param)) {
     char *p = (char *)&g_param;
     memcpy(&p[addr], &body[header_len], (size_t)value_len);
@@ -556,12 +557,16 @@ static ssize_t on_readable(Connection *c) {
   }
   ssize_t rst = on_received(c);
   if (rst > 0) {
+    c->buf_idx =
+        0; // FIXME
+           // 需要正确处理没收全、收完回复了没有新数据、收完回复了没有新数据还有数据没处理之类的情况
     return 0;
   } else if (rst == -1) {
     return -1;
   } else {
     assert(rst == RC_INCOMPLETE);
     // wait for next recv, do nothing by now
+    c->buf_idx = 0; // FIXME 需要正确处理
     return 0;
   }
 }
