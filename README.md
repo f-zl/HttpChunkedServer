@@ -62,3 +62,24 @@ bugs
 
 需要看看如何设计成BYOB，给应用层API来提供、修改buffer
 	(修改buffer的API是为了接收文件)
+
+## demo
+
+写一个demo，实现以下功能
+
+- 支持chunked response周期数据
+- 支持在发送周期数据的同时进行其他操作
+- 实现用户在接收文件时自己定义缓存区
+- 文件传输时控制payload大小恰到好处 (这个是客户端要做的，应该就整个文件只发一个POST的性能最好？)
+
+先实现基本功能
+
+### demo设计
+
+HTTP接口
+
+- GET /periodic：返回chunked response，每秒钟发送一个累增的计数器值，u32LE
+- GET /version：返回版本
+- GET /param：读取参数。假设参数就是一个u32LE (比如当前计数器值就是日期参数吧)。u32LE
+- POST /param：写参数：u32LE
+- POST /image：上传固件，最后2字节是crc校验(LE)，用modbus CRC

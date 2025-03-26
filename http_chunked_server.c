@@ -1,7 +1,9 @@
+#include "Buffer.h"
 #include "picohttpparser.h"
 #include "sock.h"
 #include "support.h"
 #include <assert.h>
+#include <ctype.h>
 #include <stdbool.h>
 #include <string.h>
 
@@ -129,15 +131,78 @@ static bool is_periodic(SpanConstChar path) {
   }
   return memcmp(path.buf, p, l) == 0;
 }
-/*
+typedef struct {
+  bool has_value;
+  uint16_t value;
+} OptionU16;
+static OptionU16 lower_hex_to_u16(const char str[4]) {
+  // 长度4的字符串，每个都是小写十六进制字符
+  OptionU16 r = {0};
+  for (int i = 0; i < 4; ++i) {
+    if (str[i] >= '0' && str[i] <= '9') {
+      r.value += (uint16_t)((str[i] - '0') << ((3 - i) * 4));
+    } else if (str[i] >= 'a' && str[i] <= 'f') {
+      r.value += (uint16_t)((str[i] - 'a' + 10) << ((3 - i) * 4));
+    } else {
+      return r; // has_value = 0
+    }
+  }
+  r.has_value = true;
+  return r;
+}
+static bool is_get_param(SpanConstChar path, uint16_t *addr, uint16_t *len) {
+  // /param/00000000
+  const char *p = "/param/";
+  const size_t l = strlen(p);
+  if (path.len != 15) {
+    return false;
+  }
+  if (memcmp(path.buf, p, l) != 0) {
+    return false;
+  }
+  OptionU16 opt_addr = lower_hex_to_u16(&path.buf[7]);
+  if (opt_addr.has_value == 0) {
+    return false;
+  }
+  OptionU16 opt_len = lower_hex_to_u16(&path.buf[11]);
+  if (opt_len.has_value == 0) {
+    return false;
+  }
+  *addr = opt_addr.value;
+  *len = opt_len.value;
+  return true;
+}
+static bool is_param(SpanConstChar path) {
+  const char *p = "/param";
+  size_t l = strlen(p);
+  if (path.len != l) {
+    return false;
+  }
+  return memcmp(path.buf, p, l) == 0;
+}
+static bool is_image(SpanConstChar path) {
+  const char *p = "/image";
+  size_t l = strlen(p);
+  if (path.len != l) {
+    return false;
+  }
+  return memcmp(path.buf, p, l) == 0;
+}
+/* clang-format off
 GET
 /version               version
 /sig/<addr>            signal
-/param/<addr>/<length> param
+/param/<addr><length>  param, addr和length都是u16，由4个小写16进制字符组成
 /periodic              periodic msg
 POST
+/param                 body的前2字节是addr，后2字节是length，后面length字节是数据，LE
+/image                 body内容为镜像文件，最后2字节是crc LE
+clang-format on
 */
-#define OK_LINE "HTTP/1.1 200 OK\r\n"
+#define HTTP_VERSION "HTTP/1.1 "
+#define OK_LINE HTTP_VERSION "200 OK\r\n"
+#define BAD_REQUEST_LINE HTTP_VERSION "400 Bad Request\r\n"
+#define NOT_FOUND_LINE HTTP_VERSION "404 Not Found\r\n"
 #define ALLOW_CORS_HEADER "Access-Control-Allow-Origin: *\r\n"
 #define TRANSFER_ENCODING_CHUNKED_HEADER "Transfer-Encoding: chunked\r\n"
 #define CONTENT_LENGTH_HEADER "Content-Length: "
@@ -145,10 +210,17 @@ POST
 static const char OK_CHUNKED_RESPONSE[79] =
     OK_LINE ALLOW_CORS_HEADER TRANSFER_ENCODING_CHUNKED_HEADER "\r\n";
 
-// 到Content-Length: 处：长度65
-#define CONTENT_LENGTH_LEN 65
+// 到Content-Length: 处，不含数值：长度65
+#define OK_CONTENT_LENGTH_LEN 65
 static const char OK_CONTENT_LENGTH_RESPONSE[70] =
     OK_LINE ALLOW_CORS_HEADER CONTENT_LENGTH_HEADER "0\r\n\r\n";
+
+#define BAD_REQUEST_CONTENT_LENGTH_LEN 74
+static const char BAD_REQUEST_CONTENT_LENGTH_RESPONSE[79] =
+    BAD_REQUEST_LINE ALLOW_CORS_HEADER CONTENT_LENGTH_HEADER "0\r\n\r\n";
+
+static const char NOT_FOUND_RESPONSE[77] =
+    NOT_FOUND_LINE ALLOW_CORS_HEADER CONTENT_LENGTH_HEADER "0\r\n\r\n";
 
 #define MAX_CHUNK_LEN_DIGIT 3
 // 最多多少个hex char可以表示长度，3个则支持最长fff长度的chunk
@@ -202,7 +274,30 @@ static void send_chunk(int fd, const void *chunk, int len) {
 //     value /= 10;
 //   }
 // }
-static size_t num_to_chars(int value, char s[4]) { // tested
+
+// 最多7个字符的十进制整数的字符串转为数值
+// 如果正常，返回0~9999999，否则返回-1表示错误
+// 不支持空白，加减号
+// 因为要支持传4MB的数据，所以需要最大长度7
+static int32_t chars_to_num(const char *s, size_t len) {
+  if (len > 7 || len == 0) {
+    return -1;
+  }
+  int32_t value = 0;
+  int32_t rank = 1;
+  const size_t end = len - 1;
+  for (size_t i = 0; i < len; ++i) {
+    char c = s[end - i]; // 从后往前
+    if (c >= '0' && c <= '9') {
+      value += (c - '0') * rank;
+      rank *= 10;
+    } else {
+      return -1;
+    }
+  }
+  return value;
+}
+static size_t num_to_four_chars(int value, char s[4]) { // tested
   assert(value <= 9999 && value >= 0);
   // 0-9
   // 10-99
@@ -245,18 +340,17 @@ static size_t num_to_chars(int value, char s[4]) { // tested
 static void send_content_length(Connection *c, size_t len) {
   assert(len <= 9999);
   char s[8];
-  size_t l = num_to_chars((int)len, s);
+  size_t l = num_to_four_chars((int)len, s);
   assert(l <= 4);
   memcpy(&s[l], "\r\n\r\n", 4);
   send(c->fd, s, l + 4, MSG_MORE);
 }
-static void send_ok_response(Connection *c, const void *body, size_t body_len) {
-  assert(body_len <= 9999); // 最大支持4 digits
-  // assert(strlen(OK_HDR) == OK_HDR_LEN);
-  // send(c->fd, body, body_len, 0);
-  // send_all(c->fd, OK_HDR, strlen(OK_HDR), 500);
+// HTTP 200
+static void send_ok_response(Connection *c, const void *body,
+                             size_t body_len) { // 200
+  assert(body_len <= 9999);                     // 最大支持4 digits
   if (body_len > 0) {
-    send(c->fd, OK_CONTENT_LENGTH_RESPONSE, CONTENT_LENGTH_LEN, MSG_MORE);
+    send(c->fd, OK_CONTENT_LENGTH_RESPONSE, OK_CONTENT_LENGTH_LEN, MSG_MORE);
     send_content_length(c, body_len);
     send_all(c->fd, body, body_len, 500);
   } else {
@@ -264,19 +358,101 @@ static void send_ok_response(Connection *c, const void *body, size_t body_len) {
              sizeof(OK_CONTENT_LENGTH_RESPONSE), 500);
   }
 }
+// HTTP 400
+static void send_bad_request_response(Connection *c, const void *body,
+                                      size_t body_len) {
+  assert(body_len <= 9999); // 最大支持4 digits
+  if (body_len > 0) {
+    send(c->fd, BAD_REQUEST_CONTENT_LENGTH_RESPONSE,
+         BAD_REQUEST_CONTENT_LENGTH_LEN, MSG_MORE);
+    send_content_length(c, body_len);
+    send_all(c->fd, body, body_len, 500);
+  } else {
+    send_all(c->fd, BAD_REQUEST_CONTENT_LENGTH_RESPONSE,
+             sizeof(BAD_REQUEST_CONTENT_LENGTH_RESPONSE), 500);
+  }
+}
 static uint32_t g_tick = 0;
+typedef struct {
+  uint32_t param1;
+  uint32_t param2;
+} Param;
+static Param g_param = {0x12345678, 0x90abcdef};
 static void send_ok_chunked_response(Connection *c) {
   send(c->fd, OK_CHUNKED_RESPONSE, sizeof(OK_CHUNKED_RESPONSE), MSG_MORE);
   uint32_t t = htonl(g_tick);
   send_chunk(c->fd, &t, 4);
 }
+static void on_get_param(Connection *c, uint16_t addr, uint16_t len) {
+  if ((len > 0) && (addr + len <= sizeof(Param))) {
+    char *p = (char *)&g_param;
+    send_ok_response(c, &p[addr], len);
+  } else {
+    send_bad_request_response(c, NULL, 0);
+  }
+}
+static void on_post_param(Connection *c, int request_len, int32_t content_len) {
+  // 检查数据是否收完 (需要能告知上层数据还没收完，继续收)
+  assert(request_len > 0 && content_len >= 0);
+  size_t total_recv = (size_t)request_len + (size_t)content_len;
+  if (c->buf_idx < total_recv) {
+    LOG_E("Body hasn't been fully received\n");
+    return;
+  }
+  const uint16_t header_len = 2;   // HTTP body里，取2字节用作地址信息
+  if (content_len <= header_len) { // 只有header没有数值也是错误
+    const char *p = "Wrong format";
+    send_bad_request_response(c, p, strlen(p));
+    return;
+  }
+  const unsigned char *body = &c->buf[request_len];
+  const uint16_t addr = ReadUint16LE(body);
+  const int32_t value_len = content_len - header_len;
+  if ((size_t)addr + (size_t)value_len <= sizeof(Param)) {
+    char *p = (char *)&g_param;
+    memcpy(&p[addr], &body[header_len], (size_t)value_len);
+    send_ok_response(c, NULL, 0);
+  } else {
+    const char *p = "Wrong value";
+    send_bad_request_response(c, p, strlen(p));
+  }
+}
+static bool match_content_length(const char *s, size_t len) {
+  const char *c = "content-length";
+  if (len != strlen(c)) { // 是否要支持空白符？
+    return false;
+  }
+  for (size_t i = 0; i < len; ++i) {
+    if (tolower(s[i]) != c[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+// -1表示有header但错误，-2表示没有这个header，其他表示content-length值
+static int32_t find_content_length(struct phr_header headers[MAX_HDR_NUM],
+                                   size_t num_headers) {
+  for (size_t i = 0; i < num_headers; ++i) {
+    if (match_content_length(headers[i].name,
+                             headers[i].name_len)) { // 只看第1个，不检查重复
+      int32_t content_len =
+          chars_to_num(headers[i].value, headers[i].value_len);
+      return content_len == -1 ? -1 : content_len;
+    }
+  }
+  return -2;
+}
+// static void on_post_image(Connection *c, int request_len, int32_t
+// content_len) {} 如果>0，则有数据回复 如果=-1，则close 如果=-2，则继续接收
+// 需要一个url查callback的机制
+// url可能有参数，怎么对匹配做抽象？
+// 可以用url检查函数做接口，并且支持检查函数将数据传给后面的函数
 static ssize_t process_request(Connection *c, SpanConstChar method,
                                SpanConstChar path,
                                struct phr_header headers[MAX_HDR_NUM],
-                               size_t num_headers) {
-  (void)path;
-  (void)headers;
-  (void)num_headers;
+                               size_t num_headers, int request_len) {
+  // TODO 应该统一检查Content-Length，看是否收完，或者EOF？
+  // GET应该检查没有更多的数据，POST统一处理Content-Length
   if (is_get(method)) {
     if (is_version(path)) {
       const char *p = "1.1.0 " __DATE__ " " __TIME__;
@@ -284,14 +460,42 @@ static ssize_t process_request(Connection *c, SpanConstChar method,
     } else if (is_periodic(path)) {
       send_ok_chunked_response(c);
       c->state = kWaitSending;
+    } else {
+      uint16_t addr;
+      uint16_t len;
+      if (is_get_param(path, &addr, &len)) { // 可能路径OK但参数误应该报另外的错
+        on_get_param(c, addr, len);
+      } else {
+        // 404
+        send_all(c->fd, NOT_FOUND_RESPONSE, sizeof(NOT_FOUND_RESPONSE), 500);
+      }
     }
-    // const char *reply = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nHello";
-    // strcpy((char *)c->buf, reply);
-    // return (ssize_t)strlen(reply);
     return -2;
   } else if (is_post(method)) {
-
+    // POST body可传数据，如果有参数，用body传二进制数据
+    const int32_t content_len = find_content_length(headers, num_headers);
+    if (content_len == -1 || content_len == -2) {
+      // 没有content-length，不支持，可以直接断连？或者400？
+      const char *p = "Fail to get Content-Length";
+      send_bad_request_response(c, p, strlen(p));
+    } else {
+      assert(content_len >= 0 && content_len <= 9999999);
+      if (is_param(path)) {
+        on_post_param(c, request_len, content_len);
+      } else if (is_image(path)) {
+        // on_post_image(c, request_len, content_len);
+        // 暂时不支持
+        send_all(c->fd, NOT_FOUND_RESPONSE, sizeof(NOT_FOUND_RESPONSE), 500);
+      } else {
+        // 404
+        send_all(c->fd, NOT_FOUND_RESPONSE, sizeof(NOT_FOUND_RESPONSE), 500);
+      }
+    }
   } else {
+    const char *p = "Method not supported";
+    send_bad_request_response(c, p, strlen(p));
+    // 400? 405?
+    // 非法的访问是否可以全部回复400 (body来区分错误)
   }
   return -2;
 }
@@ -306,21 +510,22 @@ static ssize_t on_received(Connection *c) {
   int minor_version;
   struct phr_header headers[MAX_HDR_NUM];
   size_t num_headers = MAX_HDR_NUM;
-  // 这个还是stream parser，可以对一个stream反复调用
+  // 这个是stream parser，可以对一个stream反复调用 (但基本都要从头开始parse)
   int pret = phr_parse_request(
       (const char *)c->buf, c->buf_idx, &method.buf, &method.len, &path.buf,
       &path.len, &minor_version, headers, &num_headers, c->prevbuflen);
   if (pret > 0) {
-    printf("request is %d bytes long\n", pret);
-    printf("method is %.*s\n", (int)method.len, method.buf);
-    printf("path is %.*s\n", (int)path.len, path.buf);
-    printf("HTTP version is 1.%d\n", minor_version);
-    printf("headers:\n");
+    LOG_D("request len %d bytes\n", pret); // header的长度，不含body
+    LOG_D("method %.*s\n", (int)method.len, method.buf);
+    LOG_D("path %.*s\n", (int)path.len, path.buf);
+    LOG_D("HTTP version 1.%d\n", minor_version);
+    LOG_D("headers:\n");
     for (size_t i = 0; i != num_headers; ++i) {
-      printf("%.*s: %.*s\n", (int)headers[i].name_len, headers[i].name,
-             (int)headers[i].value_len, headers[i].value);
+      LOG_D("%.*s: %.*s\n", (int)headers[i].name_len, headers[i].name,
+            (int)headers[i].value_len, headers[i].value);
     }
-    return process_request(c, method, path, headers, num_headers);
+    return process_request(c, method, path, headers, num_headers, pret);
+    // 如果处理完请求，应该把缓存长度归0
   } else if (pret == -1) {
     LOG_W("parse err\n");
     return -1; // should close connection
@@ -341,7 +546,7 @@ static ssize_t on_readable(Connection *c) {
   ssize_t r = recv(c->fd, &c->buf[c->buf_idx], buf_remain_len, 0);
   // 调用前已判断无POLLERR和POLLHUP，因此这里recv返回值必>0
   if (r <= 0) {
-    LOG_W("recv %d despite POLLIN\n", (int)r);
+    LOG_E("unexpected recv %d\n", (int)r); // FIXME 有时值为0
     return -1;
   }
   c->buf_idx += (size_t)r;
@@ -351,11 +556,6 @@ static ssize_t on_readable(Connection *c) {
   }
   ssize_t rst = on_received(c);
   if (rst > 0) {
-    // ssize_t r = send_all(c->fd, c->buf, (size_t)rst, 500);
-    // if (r < 0) { // TODO or timeout
-    //   PERROR("send");
-    //   return -1;
-    // }
     return 0;
   } else if (rst == -1) {
     return -1;
