@@ -1,3 +1,4 @@
+#include "impl.h"
 #include "unity.h"
 #include <assert.h>
 #include <inttypes.h>
@@ -8,76 +9,12 @@
 #include <string.h>
 void setUp() {}
 void tearDown() {}
-static const char DIGITS[16] = "0123456789abcdef";
-static char decimal_digit(int value) {
-  assert(value >= 0 && value <= 9);
-  return DIGITS[value];
-}
-static size_t num_to_chars(int value, char s[4]) {
-  assert(value <= 9999 && value >= 0);
-  // 0-9
-  // 10-99
-  // 100-999
-  // 1000-9999
-  if (value <= 9) {
-    s[0] = decimal_digit(value);
-    return 1;
-  }
-  int one, ten, hundred, thousand;
-  if (value <= 99) {
-    ten = value / 10;
-    one = value % 10;
-    s[0] = decimal_digit(ten);
-    s[1] = decimal_digit(one);
-    return 2;
-  }
-  if (value <= 999) {
-    one = value % 10;
-    value /= 10;
-    ten = value % 10;
-    hundred = value / 10;
-    s[0] = decimal_digit(hundred);
-    s[1] = decimal_digit(ten);
-    s[2] = decimal_digit(one);
-    return 3;
-  }
-  one = value % 10;
-  value /= 10;
-  ten = value % 10;
-  value /= 10;
-  hundred = value % 10;
-  thousand = value / 10;
-  s[0] = decimal_digit(thousand);
-  s[1] = decimal_digit(hundred);
-  s[2] = decimal_digit(ten);
-  s[3] = decimal_digit(one);
-  return 4;
-}
 #define CHECK(value) check(value, #value, strlen(#value))
 static void check(int value, const char *s, size_t len) {
   char c[4];
-  size_t l = num_to_chars(value, c);
+  size_t l = num_to_four_chars(value, c);
   TEST_ASSERT_EQUAL_size_t(len, l);
   TEST_ASSERT_EQUAL_STRING_LEN(s, c, len);
-}
-typedef struct {
-  bool has_value;
-  uint16_t value;
-} OptionU16;
-static OptionU16 lower_hex_to_u16(const char str[4]) {
-  // 长度4的字符串，每个都是小写十六进制字符
-  OptionU16 r = {0};
-  for (int i = 0; i < 4; ++i) {
-    if (str[i] >= '0' && str[i] <= '9') {
-      r.value += (uint16_t)((str[i] - '0') << ((3 - i) * 4));
-    } else if (str[i] >= 'a' && str[i] <= 'f') {
-      r.value += (uint16_t)((str[i] - 'a' + 10) << ((3 - i) * 4));
-    } else {
-      return r; // has_value = 0
-    }
-  }
-  r.has_value = true;
-  return r;
 }
 static void check1(const char str[4], bool has_value, uint16_t value) {
   OptionU16 u = lower_hex_to_u16(str);
@@ -94,24 +31,6 @@ static void test_lower_hex_to_u16() {
   check1("fbcd", 1, 0xfbcd);
   check1("0-al", 0, 0);
   check1("0ABF", 0, 0);
-}
-static int32_t chars_to_num(const char *s, size_t len) {
-  if (len > 7 || len == 0) {
-    return -1;
-  }
-  int32_t value = 0;
-  int32_t rank = 1;
-  const size_t end = len - 1;
-  for (size_t i = 0; i < len; ++i) {
-    char c = s[end - i]; // 从后往前
-    if (c >= '0' && c <= '9') {
-      value += (c - '0') * rank;
-      rank *= 10;
-    } else {
-      return -1;
-    }
-  }
-  return value;
 }
 #define CHECK2(value) check2(#value, value)
 static void check2(const char *s, int32_t expect) {
