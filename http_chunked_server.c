@@ -4,6 +4,7 @@
 #include "support.h"
 #include <assert.h>
 #include <ctype.h>
+#include <netinet/tcp.h> // TCP_NODELAY
 #include <stdbool.h>
 #include <string.h>
 
@@ -27,6 +28,7 @@ typedef struct {
 typedef struct {
   int client_num;
   Connection conn[MAX_CLIENT_NUM];
+  TickType_t last_send_tick;
 } Server;
 static void reset_conn_data(Connection *c) {
   c->state = kReceiving;
@@ -92,14 +94,33 @@ static int on_ready_accept(Server *server, const int server_fd,
   }
   return 0;
 }
-static int calc_timeout() {
-  // 返回poll的timeout值，单位ms
-  // if (has_listening_client) { // 存在监听周期数据的client
-  // timeout = next_cycle(period, last_send_time)
-  // } else {
-  // timeout = -1
-  // }
-  return 1000;
+const uint16_t PERIOD_MS = 1000;
+// 是否存在监听周期数据的client
+static bool has_listening_client(Server *server) {
+  for (int i = 0; i < server->client_num; ++i) {
+    if (server->conn[i].state == kWaitSending) {
+      return true;
+    }
+  }
+  return false;
+}
+// 距下次发送还有多少ms
+static int to_next(uint16_t period, TickType_t last_send_tick) {
+  TickType_t elapsed = GetElapsedMs(last_send_tick);
+  if (elapsed >= (TickType_t)period) {
+    return 0;
+  }
+  return (int)((TickType_t)period - elapsed);
+}
+// 返回poll的timeout值，单位ms，-1为一直等待
+static int calc_timeout(Server *server) {
+  int timeout;
+  if (has_listening_client(server)) {
+    timeout = to_next(PERIOD_MS, server->last_send_tick);
+  } else {
+    timeout = -1;
+  }
+  return timeout;
 }
 static bool is_get(SpanConstChar method) {
   if (method.len != 3) {
@@ -233,12 +254,10 @@ static char decimal_digit(int value) {
   assert(value >= 0 && value <= 9);
   return DIGITS[value];
 }
-static void send_chunk(int fd, const void *chunk, int len) {
-  assert(len >= 0 && len <= 0xfff); // MAX_CHUNK_LEN_DIGIT设定了最多3位
-  if (len == 0) {
-    send(fd, "0\r\n\r\n", 5, 0);
-    return;
-  }
+// 表示结束
+static void send_empty_chunk(int fd) { send(fd, "0\r\n\r\n", 5, 0); }
+static void send_chunk_with_data(int fd, const void *chunk, int len) {
+  assert(len > 0 && len <= 0xfff); // MAX_CHUNK_LEN_DIGIT设定了最多3位
   char length_line[MAX_CHUNK_LEN_DIGIT + 2];
   // 需要根据len的实际值计算长度，写入length_line
   // len: 0-0xf则1位
@@ -378,10 +397,12 @@ typedef struct {
   uint32_t param2;
 } Param;
 static Param g_param = {0x12345678, 0x90abcdef};
+static Server s_server;
 static void send_ok_chunked_response(Connection *c) {
   send(c->fd, OK_CHUNKED_RESPONSE, sizeof(OK_CHUNKED_RESPONSE), MSG_MORE);
   uint32_t t = htonl(g_tick);
-  send_chunk(c->fd, &t, 4);
+  send_chunk_with_data(c->fd, &t, 4);
+  s_server.last_send_tick = xTaskGetTickCount();
 }
 static void on_get_param(Connection *c, uint16_t addr, uint16_t len) {
   if ((len > 0) && (addr + len <= sizeof(Param))) {
@@ -575,12 +596,14 @@ static void on_poll_timeout(Server *server) {
     if (server->conn[i].state == kWaitSending) {
       ++g_tick;
       uint32_t t = htonl(g_tick);
-      send_chunk(server->conn[i].fd, &t, 4);
+      send_chunk_with_data(server->conn[i].fd, &t, 4);
+      server->last_send_tick =
+          xTaskGetTickCount(); // TODO do not update if send fail
       printf("send_chunk(%08x)\n", g_tick);
-      if (g_tick > 5) {
-        send_chunk(server->conn[i].fd, NULL, 0);
-        server->conn[i].state = kReceiving;
-      }
+      // if (g_tick > 5) {
+      //   send_empty_chunk(server->conn[i].fd);
+      //   server->conn[i].state = kReceiving;
+      // }
     }
   }
 }
@@ -594,7 +617,7 @@ static void poll_loop(Server *server, const int server_fd) {
   fds[0].events = POLLIN;
   server->client_num = 0;
   while (!REQUIRE_STOP()) {
-    const int timeout_ms = calc_timeout();
+    const int timeout_ms = calc_timeout(server);
     const int n = poll(fds, (nfds_t)NFDS(server->client_num), timeout_ms);
     if (n < 0) { // unlikely
       PERROR("poll");
@@ -657,13 +680,20 @@ static void setup_signal(void) {
     exit(EXIT_FAILURE);
   }
 }
-static Server s_server;
 int main(void) {
   setup_signal();
   uint16_t port = 8000;
   int backlog = 1;
   int fd = setup_tcp_server(port, backlog);
   assert(fd >= 0);
+  int value;
+  socklen_t value_len = sizeof(value);
+  int r = getsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &value, &value_len);
+  if (r != 0) {
+    perror("getsockeopt");
+    return r;
+  }
+  printf("TCP_NODELAY=%d\n", value); // 0
   poll_loop(&s_server, fd);
   LOG_D("exit\n");
 }

@@ -83,3 +83,11 @@ HTTP接口
 - GET /param：读取参数。假设参数就是一个u32LE (比如当前计数器值就是日期参数吧)。u32LE
 - POST /param：写参数：u32LE
 - POST /image：上传固件，最后2字节是crc校验(LE)，用modbus CRC
+
+经测试，浏览器的行为 (Edge)，对HTTP/1.1会用连接池，连接上会保持连接，用于传其他请求  
+显然chucked response不能复用，所以一遍接收chunked response，一般发起其他请求会有2个请求  
+如果chunked response关闭，然后再开启会如何，待测试  
+嵌入式端行为如何，待测试
+
+奇怪的是MSG_MORE不会缓存消息，而会直接发出。Wireshark显示每个回复都是发了多段。Why？  
+说可能是TCP_NODELAY，但读出来值为0

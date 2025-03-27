@@ -4,7 +4,7 @@ add_library(pico OBJECT picohttpparser.c picohttpparser.h)
 add_executable(server
 	http_chunked_server.c
 	sock.c sock.h
-	support.h
+	support.cpp support.h
 )
 target_compile_options(server PRIVATE -Wall -Wextra -pedantic -Wconversion -g)
 target_link_libraries(server pico)
