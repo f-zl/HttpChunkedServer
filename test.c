@@ -1,3 +1,4 @@
+#include "unity.h"
 #include <assert.h>
 #include <inttypes.h>
 #include <stdbool.h>
@@ -5,6 +6,8 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+void setUp() {}
+void tearDown() {}
 static const char DIGITS[16] = "0123456789abcdef";
 static char decimal_digit(int value) {
   assert(value >= 0 && value <= 9);
@@ -52,16 +55,10 @@ static size_t num_to_chars(int value, char s[4]) {
 }
 #define CHECK(value) check(value, #value, strlen(#value))
 static void check(int value, const char *s, size_t len) {
-  printf("check(%d, %s, %zu)\n", value, s, len);
   char c[4];
   size_t l = num_to_chars(value, c);
-  if (l != len) {
-    printf("len %zu != %zu\n", l, len);
-    return;
-  }
-  if (memcmp(s, c, len) != 0) {
-    printf("Wrong result %d %s\n", value, s);
-  }
+  TEST_ASSERT_EQUAL_size_t(len, l);
+  TEST_ASSERT_EQUAL_STRING_LEN(s, c, len);
 }
 typedef struct {
   bool has_value;
@@ -72,9 +69,9 @@ static OptionU16 lower_hex_to_u16(const char str[4]) {
   OptionU16 r = {0};
   for (int i = 0; i < 4; ++i) {
     if (str[i] >= '0' && str[i] <= '9') {
-      r.value += (str[i] - '0') << ((3 - i) * 4);
+      r.value += (uint16_t)((str[i] - '0') << ((3 - i) * 4));
     } else if (str[i] >= 'a' && str[i] <= 'f') {
-      r.value += (str[i] - 'a' + 10) << ((3 - i) * 4);
+      r.value += (uint16_t)((str[i] - 'a' + 10) << ((3 - i) * 4));
     } else {
       return r; // has_value = 0
     }
@@ -85,17 +82,10 @@ static OptionU16 lower_hex_to_u16(const char str[4]) {
 static void check1(const char str[4], bool has_value, uint16_t value) {
   OptionU16 u = lower_hex_to_u16(str);
   if (u.has_value) {
-    if (!has_value) {
-      printf("Wrong %*.s has_value 1!=0\n", 4, str);
-      return;
-    }
-    if (u.value != value) {
-      printf("Wrong %*.s value %04x!=%04x\n", 4, str, u.value, value);
-    }
+    TEST_ASSERT_TRUE(has_value);
+    TEST_ASSERT_EQUAL_HEX16(value, u.value);
   } else {
-    if (has_value) {
-      printf("Wrong %*.s has_value 0!=1\n", 4, str);
-    }
+    TEST_ASSERT_FALSE(has_value);
   }
 }
 static void test_lower_hex_to_u16() {
@@ -105,12 +95,12 @@ static void test_lower_hex_to_u16() {
   check1("0-al", 0, 0);
   check1("0ABF", 0, 0);
 }
-static uint64_t chars_to_num(const char *s, size_t len) {
+static int32_t chars_to_num(const char *s, size_t len) {
   if (len > 7 || len == 0) {
     return -1;
   }
-  uint64_t value = 0;
-  uint64_t rank = 1;
+  int32_t value = 0;
+  int32_t rank = 1;
   const size_t end = len - 1;
   for (size_t i = 0; i < len; ++i) {
     char c = s[end - i]; // 从后往前
@@ -126,9 +116,7 @@ static uint64_t chars_to_num(const char *s, size_t len) {
 #define CHECK2(value) check2(#value, value)
 static void check2(const char *s, int32_t expect) {
   int32_t actual = chars_to_num(s, strlen(s));
-  if (actual != expect) {
-    printf("Fail to parse %s %" PRIi32 "!=%" PRIi32 "\n", s, actual, expect);
-  }
+  TEST_ASSERT_EQUAL_INT32(expect, actual);
 }
 static void test_chars_to_num() {
   CHECK2(124);
@@ -138,7 +126,7 @@ static void test_chars_to_num() {
   check2("19182761", -1);
   check2("1a", -1);
 }
-int main() {
+static void test_num_to_chars() {
   CHECK(0);
   CHECK(1);
   CHECK(9);
@@ -154,7 +142,11 @@ int main() {
   CHECK(5634);
   CHECK(8765);
   CHECK(9999);
-  test_lower_hex_to_u16();
-  test_chars_to_num();
-  puts("Done");
+}
+int main(void) {
+  UNITY_BEGIN();
+  RUN_TEST(test_num_to_chars);
+  RUN_TEST(test_lower_hex_to_u16);
+  RUN_TEST(test_chars_to_num);
+  return UNITY_END();
 }
