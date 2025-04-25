@@ -12,13 +12,13 @@
 
 简单的实现就是只看POLLIN，在poll返回时检查时间，根据周期来设定poll的timeout，从而在达到周期的时候可以退出poll来检查时间，触发周期发送
 
-关键的问题是，是否允许发送block？\
-	如果用blocking API且真的阻塞 (比如TCP window full)，则其他连接无法通信\
-	可以用write timeout解决这个问题，一旦timeout就RST\
-	如果不用blocking API，则需要另外每个连接都需要一个独立buffer，数据也要先写到发送buffer里，在poll loop里循环发送
+关键的问题是，是否允许发送block？  
+  如果用blocking API且真的阻塞 (比如TCP window full)，则其他连接无法通信  
+  可以用write timeout解决这个问题，一旦timeout就RST  
+  如果不用blocking API，则需要另外每个连接都需要一个独立buffer，数据也要先写到发送buffer里，在poll loop里循环发送
 
-先用blocking API吧，简单点
-可以看看asio之类的库怎么设计的
+先用blocking API吧，简单点  
+可以看看asio之类的库怎么设计的  
 最好有C库的设计，比如libevent？libev？
 
 ```
@@ -56,12 +56,15 @@ response的状态，则不应该有数据，只会有关闭连接
 
 用fuzzy测试下
 
-bugs
+## Bugs
+
 发送完成后(zero chunk)，再次读取会断连
 (不过正常应该没有主动发zero chunk的情况)
 
-需要看看如何设计成BYOB，给应用层API来提供、修改buffer
-	(修改buffer的API是为了接收文件)
+需要看看如何设计成BYOB，给应用层API来提供、修改buffer  
+  (修改buffer的API是为了接收文件)
+
+处理完请求后收缓存没清空
 
 ## demo
 
@@ -91,3 +94,20 @@ HTTP接口
 
 奇怪的是MSG_MORE不会缓存消息，而会直接发出。Wireshark显示每个回复都是发了多段。Why？  
 说可能是TCP_NODELAY，但读出来值为0
+
+### 设计发送缓存
+
+为什么要发送缓存？  
+  如果有多个连接，不允许某个连接阻塞在发送上，所以需要有发送缓存暂存待发数据
+怎么设计？  
+  每个连接一个固定长度的缓存 (对应用层够长)  
+  应用层写数据先写缓存，在POLLOUT事件时执行发送  
+  状态机管理POLLOUT事件的检查
+应用层怎么写数据先写缓存？  
+  应用层程序里不用send，而用send_to_buf  
+  send_to_buf把数据memcpy到缓存，记录长度  
+  在从buffer发送到OS时再减少缓存长度
+怎么处理没有发送完成的情况？
+  1. 可以规定缓存必须从首位开始，部分出队时剩余数据前移
+  2. 可以环形缓存，每次都写入缓存的最后  
+    send_to_buf也可能写到尾部，然后从头开始写

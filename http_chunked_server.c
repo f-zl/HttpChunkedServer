@@ -12,8 +12,13 @@
 #define MAX_CLIENT_NUM 2
 #define BUF_SIZE 1024
 #define NFDS(client_num) ((client_num) + 1)
-typedef enum { kReceiving, kWaitSending } ConnectionState;
-#define MAX_HDR_NUM 50
+typedef enum {
+  kReceivingHead, // 这里把从request line开始，到\r\n\r\n结束的部分统称为head
+  kReceivingBody,
+  kSending,
+  kWaitSending // wait to send next chunked response
+} ConnectionState;
+#define MAX_HDR_NUM 20
 typedef struct {
   const char *buf;
   size_t len;
@@ -25,6 +30,7 @@ typedef struct {
   unsigned char buf[BUF_SIZE];
   size_t buf_idx;    // how many bytes have been received
   size_t prevbuflen; // used by picohttpparser
+  int32_t content_len;
 } Connection;
 typedef struct {
   int client_num;
@@ -32,7 +38,7 @@ typedef struct {
   TickType_t last_send_tick;
 } Server;
 static void reset_conn_data(Connection *c) {
-  c->state = kReceiving;
+  c->state = kReceivingHead;
   c->buf_idx = 0;
   c->prevbuflen = 0;
 }
@@ -135,6 +141,7 @@ static bool is_post(SpanConstChar method) {
   }
   return memcmp(method.buf, "POST", 4) == 0;
 }
+#define RC_OK (0)
 #define RC_ERR (-1)
 #define RC_INCOMPLETE (-2)
 static bool is_version(SpanConstChar path) {
@@ -230,7 +237,7 @@ static const char NOT_FOUND_RESPONSE[77] =
 // 最多多少个hex char可以表示长度，3个则支持最长fff长度的chunk
 
 // 表示结束
-static void send_empty_chunk(int fd) { send(fd, "0\r\n\r\n", 5, 0); }
+// static void send_empty_chunk(int fd) { send(fd, "0\r\n\r\n", 5, 0); }
 static void send_chunk_with_data(int fd, const void *chunk, int len) {
   assert(len > 0 && len <= 0xfff); // MAX_CHUNK_LEN_DIGIT设定了最多3位
   char length_line[MAX_CHUNK_LEN_DIGIT + 2];
@@ -317,7 +324,9 @@ static void on_get_param(Connection *c, uint16_t addr, uint16_t len) {
     send_bad_request_response(c, NULL, 0);
   }
 }
-static void on_post_param(Connection *c, int request_len, int32_t content_len) {
+static void on_post_param2(Connection *c, int request_len,
+                           int32_t content_len) {
+  // TODO 假设Content-Length已经收满
   // 检查数据是否收完 (需要能告知上层数据还没收完，继续收)
   assert(request_len > 0 && content_len >= 0);
   size_t total_recv = (size_t)request_len + (size_t)content_len;
@@ -344,6 +353,33 @@ static void on_post_param(Connection *c, int request_len, int32_t content_len) {
     send_bad_request_response(c, p, strlen(p));
   }
 }
+static void on_post_param(Connection *c, const unsigned char *body,
+                          int32_t content_len) {
+  assert(content_len >= 0);
+  const uint16_t header_len = 2;   // HTTP body里，取2字节用作地址信息
+  if (content_len <= header_len) { // 只有header没有数值也是错误
+    const char *p = "Wrong format";
+    send_bad_request_response(c, p, strlen(p));
+    return;
+  }
+  const uint16_t addr = ReadUint16LE(body);
+  const int32_t value_len = content_len - header_len;
+  LOG_D("POST /param(%d,%d)\n", addr, value_len);
+  if ((size_t)addr + (size_t)value_len <= sizeof(Param)) {
+    char *p = (char *)&g_param;
+    memcpy(&p[addr], &body[header_len], (size_t)value_len);
+    send_ok_response(c, NULL, 0);
+  } else {
+    const char *p = "Wrong value";
+    send_bad_request_response(c, p, strlen(p));
+  }
+}
+static void on_post_image(Connection *c, const unsigned char *body,
+                          int32_t content_len) {
+  (void)c;
+  (void)body;
+  LOG_D("POST /image %d\n", content_len);
+}
 static bool match_content_length(const char *s, size_t len) {
   const char *c = "content-length";
   if (len != strlen(c)) { // 是否要支持空白符？
@@ -356,7 +392,7 @@ static bool match_content_length(const char *s, size_t len) {
   }
   return true;
 }
-// -1表示有header但错误，-2表示没有这个header，其他表示content-length值
+// -1表示有header但错误，-2表示没有这个header，其他表示content-length值(范围0~9999999)
 static int32_t find_content_length(struct phr_header headers[MAX_HDR_NUM],
                                    size_t num_headers) {
   for (size_t i = 0; i < num_headers; ++i) {
@@ -408,9 +444,9 @@ static ssize_t process_request(Connection *c, SpanConstChar method,
     } else {
       assert(content_len >= 0 && content_len <= 9999999);
       if (is_param(path)) {
-        on_post_param(c, request_len, content_len);
+        on_post_param2(c, request_len, content_len);
       } else if (is_image(path)) {
-        // on_post_image(c, request_len, content_len);
+        on_post_image(c, &c->buf[request_len], content_len);
         // 暂时不支持
         send_all(c->fd, NOT_FOUND_RESPONSE, sizeof(NOT_FOUND_RESPONSE), 500);
       } else {
@@ -429,7 +465,7 @@ static ssize_t process_request(Connection *c, SpanConstChar method,
 // 如果>0，则有数据回复
 // 如果=-1，则close
 // 如果=-2，则继续接收
-static ssize_t on_received(Connection *c) {
+/*static*/ ssize_t on_received(Connection *c) {
   // 收到新数据
   // 尝试解析请求并处理
   SpanConstChar method;
@@ -455,37 +491,182 @@ static ssize_t on_received(Connection *c) {
     // 如果处理完请求，应该把缓存长度归0
   } else if (pret == -1) {
     LOG_W("parse err\n");
-    return -1; // should close connection
+    return RC_ERR; // should close connection
   } else {
     assert(pret == -2); // incomplete
     c->prevbuflen = c->buf_idx;
     return RC_INCOMPLETE;
   }
 }
+static void process_get_request(Connection *c, SpanConstChar path) {
+  if (is_version(path)) {
+    const char *p = "1.1.0 " __DATE__ " " __TIME__;
+    send_ok_response(c, p, strlen(p));
+  } else if (is_periodic(path)) {
+    send_ok_chunked_response(c);
+    c->state = kWaitSending;
+  } else {
+    uint16_t addr;
+    uint16_t len;
+    if (is_get_param(path, &addr, &len)) { // 可能路径OK但参数误应该报另外的错
+      on_get_param(c, addr, len);
+    } else {
+      // 404
+      send_all(c->fd, NOT_FOUND_RESPONSE, sizeof(NOT_FOUND_RESPONSE), 500);
+    }
+  }
+}
+static void process_post_request(Connection *c, SpanConstChar path,
+                                 const unsigned char *body,
+                                 int32_t content_len) {
+  // POST body可传数据，如果有参数，用body传二进制数据
+  assert(content_len >= 0 && content_len <= 9999999);
+  if (is_param(path)) {
+    on_post_param(c, body, content_len);
+  } else if (is_image(path)) {
+    on_post_image(c, NULL, content_len);
+    // 暂时不支持
+    send_all(c->fd, NOT_FOUND_RESPONSE, sizeof(NOT_FOUND_RESPONSE), 500);
+  } else {
+    // 404
+    send_all(c->fd, NOT_FOUND_RESPONSE, sizeof(NOT_FOUND_RESPONSE), 500);
+  }
+}
+static int process_head(Connection *c, SpanConstChar method, SpanConstChar path,
+                        struct phr_header headers[MAX_HDR_NUM],
+                        size_t num_headers, size_t head_len) {
+  (void)path;
+  if (is_get(method)) {
+    // process and send response
+    // for simplicity, discard extra data
+    // (or close connection?)
+    // GET with body is not supported
+    // more than one request at a time is not supported
+    if (c->buf_idx > head_len) {
+      LOG_W("GET with extra data\n");
+    }
+    process_get_request(c, path);
+    return RC_OK;
+  } else if (is_post(method)) {
+    const int32_t content_len = find_content_length(headers, num_headers);
+    if (content_len < 0) {
+      LOG_W("Content-Length %d\n", content_len);
+      // send error response, or close connection?
+      return RC_ERR;
+    } else if ((size_t)content_len <= (c->buf_idx - head_len)) {
+      // can be processed
+      // 索性应用层不用header
+      process_post_request(c, path, &c->buf[head_len], content_len);
+      return RC_OK;
+    } else {
+      // if is /image, copy data to image buffer, store future data there
+      // 怎么存放header (不用存，用个flag知道是/image即可)
+      // 是否要为body另开一个缓存？
+      c->state = kReceivingBody;
+      c->content_len = content_len;
+      return RC_INCOMPLETE;
+    }
+  } else {
+    // only PATCH, POST, and PUT requests have a body
+    // send error response, or wait for complete request? or close?
+    // for simplicity, just close
+    return RC_ERR;
+  }
+}
+static int on_recv_head(Connection *c) {
+  SpanConstChar method;
+  SpanConstChar path;
+  int minor_version;
+  struct phr_header headers[MAX_HDR_NUM];
+  size_t num_headers = MAX_HDR_NUM;
+  // picohttpparser可以对一个stream反复调用 (但基本都要从头开始parse)
+  int pret = phr_parse_request(
+      (const char *)c->buf, c->buf_idx, &method.buf, &method.len, &path.buf,
+      &path.len, &minor_version, headers, &num_headers, c->prevbuflen);
+  LOG_D("phr_parse=%d\n", pret);
+  if (pret > 0) {
+    // if err, close
+    // if body incomplete, keep receving
+    // if ok, recv next
+    int r = process_head(c, method, path, headers, num_headers, (size_t)pret);
+    switch (r) {
+    case RC_OK:
+      return RC_OK;
+    case RC_INCOMPLETE: // head is complete while full request not
+      c->state = kReceivingBody;
+      return RC_INCOMPLETE;
+    default: // RC_ERR
+      return r;
+    }
+  } else if (pret == -2) { // incomplete
+    c->prevbuflen = c->buf_idx;
+    return RC_INCOMPLETE;
+  } else {
+    LOG_W("header parse err\n");
+    return RC_ERR;
+  }
+}
+static int on_recv_body(Connection *c) {
+  if (c->buf_idx < (size_t)c->content_len) {
+    return RC_INCOMPLETE;
+  }
+  // 收满body，可以处理
+  // 根据on_recv_head的实现，只会是POST (header数据存到哪里？)
+  return RC_OK;
+}
+static void clear_read_buf(Connection *c) { c->buf_idx = 0; }
 // 返回0表示正常
 // 返回-1表示错误或者对方断开连接，应关闭连接
 static ssize_t on_readable(Connection *c) {
+  /* TODO
+  每个连接设计一个buffer (应用层管理吧)
+  把发送数据先写入buffer，然后发送
+  发不完就监听POLLOUT，能发时发
+  */
   if (BUF_SIZE <= c->buf_idx) {
     LOG_W("read buffer full\n");
     return -1;
   }
   const size_t buf_remain_len = BUF_SIZE - c->buf_idx;
   ssize_t r = recv(c->fd, &c->buf[c->buf_idx], buf_remain_len, 0);
-  // 调用前已判断无POLLERR和POLLHUP，因此这里recv返回值必>0
-  if (r <= 0) {
-    LOG_E("unexpected recv %d\n", (int)r); // FIXME 有时值为0
+  // 调用前已判断无POLLERR和POLLHUP，有POLLIN
+  if (r == 0) { // Linux上对方断连返回POLLIN而非POLLHUP
+    return -1;
+  } else if (r < 0) {
+    LOG_E("recv %d with POLLIN\n", (int)r);
     return -1;
   }
   c->buf_idx += (size_t)r;
-  if (c->state != kReceiving) {
-    LOG_W("unexpected recv\n");
+  int rst;
+  switch (c->state) {
+  case kReceivingHead:
+    LOG_D("recv %zu in head state\n", c->buf_idx);
+    rst = on_recv_head(c);
+    switch (rst) {
+    case RC_ERR:
+      return -1;
+    case RC_OK:
+      clear_read_buf(c);
+      break;
+    }
+    return 0;
+  case kReceivingBody:
+    LOG_D("recv %zu in body state\n", c->buf_idx);
+    rst = on_recv_body(c);
+    if (rst == RC_ERR) {
+      return -1;
+    }
+    return 0;
+  default: // 其他状态都不该收到数据
+    LOG_E("recv in state %d\n", c->state);
     return -1;
   }
+#if 0
   ssize_t rst = on_received(c);
   if (rst > 0) {
-    c->buf_idx =
-        0; // FIXME
-           // 需要正确处理没收全、收完回复了没有新数据、收完回复了没有新数据还有数据没处理之类的情况
+    c->buf_idx = 0;
+    // FIXME
+    // 需要正确处理没收全、收完回复了没有新数据、收完回复了没有新数据还有数据没处理之类的情况
     return 0;
   } else if (rst == -1) {
     return -1;
@@ -495,6 +676,7 @@ static ssize_t on_readable(Connection *c) {
     c->buf_idx = 0; // FIXME 需要正确处理
     return 0;
   }
+#endif
 }
 static void on_poll_timeout(Server *server) {
   for (int i = 0; i < server->client_num; ++i) {
@@ -527,18 +709,16 @@ static void poll_loop(Server *server, const int server_fd) {
     if (n < 0) { // unlikely
       PERROR("poll");
       break;
-    } else if (n == 0) {
+    } else if (unlikely(n == 0)) {
       on_poll_timeout(server);
     } else {
       // these events should never happen to server fd
       assert((fds[0].revents & (POLLNVAL | POLLHUP)) == 0);
       if (fds[0].revents & POLLERR) {
         // will this happen?
-        LOG_D("server fd err\n");
-        break;
+        LOG_W("server fd err\n");
       } else if (fds[0].revents & POLLIN) {
         if (on_ready_accept(server, server_fd, fds) < 0) {
-          break;
         }
       }
       // iterate over clients
@@ -549,12 +729,19 @@ static void poll_loop(Server *server, const int server_fd) {
           checked_close(fds[i].fd);
           remove_client(server, fds, i);
           --i; // update loop index due to array length change
-        } else if (fds[i].revents & POLLIN) {
-          // fds[i] is in conn[i-1]
-          if (on_readable(&server->conn[i - 1]) < 0) {
-            checked_close(fds[i].fd);
-            remove_client(server, fds, i);
-            --i;
+        } else {
+          if (fds[i].revents & POLLIN) {
+            // fds[i] is in conn[i-1]
+            if (on_readable(&server->conn[i - 1]) < 0) {
+              checked_close(fds[i].fd);
+              remove_client(server, fds, i);
+              --i;
+            }
+          }
+          if (fds[i].revents & POLLOUT) {
+            // 如果当前有要发的数据，应该在pollfds里设置event为发送，在POLLOUT时发送
+            // 由于应用层发送时不需要接收，可以不用POLLIN？
+            // 还是要检查POLLIN，如果有数据，应用层决定断连
           }
         }
       }

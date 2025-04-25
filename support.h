@@ -9,6 +9,9 @@
 extern "C" {
 #endif
 
+#define likely(x) __builtin_expect((x), 1)
+#define unlikely(x) __builtin_expect((x), 0)
+
 extern sig_atomic_t g_require_stop;
 #define REQUIRE_STOP() (g_require_stop)
 // 一般Warning是用户操作错误，Error是程序错误

@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 project(http_chunked_server)
+add_compile_options(-fsanitize=address)
+add_link_options(-fsanitize=address)
 set(cflags -Wall -Wextra -pedantic -Wconversion -g)
 
 add_library(pico OBJECT picohttpparser.c picohttpparser.h)
