@@ -111,3 +111,17 @@ HTTP接口
   1. 可以规定缓存必须从首位开始，部分出队时剩余数据前移
   2. 可以环形缓存，每次都写入缓存的最后  
     send_to_buf也可能写到尾部，然后从头开始写
+
+## TODO
+
+- 完善单个Connection的状态机，图中加上所有状态变量
+- 重构代码，或者改状态机，使两者完全对应
+- 整理server连接的状态机，和代码对应
+
+- 抽象buffer，实现应用层BYOB、应用层修改buffer
+- 在其他服务的基础上实现文件传输，只在传输时用某个buffer
+- 改为non-blocking send
+- 对socket做抽象，兼容winsock
+- 分层，event loop, protocol, user三层
+- 如果用户需要一套代码支持多protocol，则需要动态回调
+- 取名，接口加前缀

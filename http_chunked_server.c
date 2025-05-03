@@ -19,10 +19,6 @@ typedef enum {
   kWaitSending // wait to send next chunked response
 } ConnectionState;
 #define MAX_HDR_NUM 20
-typedef struct {
-  const char *buf;
-  size_t len;
-} SpanConstChar;
 
 typedef struct {
   int fd;
@@ -72,14 +68,17 @@ static void remove_client(Server *server, struct pollfd fds[], const int i) {
   memmove(&fds[i], &fds[i + 1],
           sizeof(struct pollfd) * (size_t)(server->client_num - i));
   // FIXME 这里应该要去掉已经无效的server->conn[i-1]
-  // 但buffer是直接写在server->conn里的memmove好像也不合理
+  // 但buffer是直接写在server->conn里的，memmove好像也不合理
+  // Connection用链表更合适
   server->client_num -= 1;
   print_poll_state(fds, server->client_num);
   // 目前server->conn[i-1]在accept时复位
 }
 static void checked_close(int fd) {
   int r = close(fd);
-  assert(r == 0);
+  if (r != 0) {
+    perror("close");
+  }
 }
 static int on_ready_accept(Server *server, const int server_fd,
                            struct pollfd fds[]) {
@@ -128,18 +127,6 @@ static int calc_timeout(Server *server) {
     timeout = -1;
   }
   return timeout;
-}
-static bool is_get(SpanConstChar method) {
-  if (method.len != 3) {
-    return false;
-  }
-  return memcmp(method.buf, "GET", 3) == 0;
-}
-static bool is_post(SpanConstChar method) {
-  if (method.len != 4) {
-    return false;
-  }
-  return memcmp(method.buf, "POST", 4) == 0;
 }
 #define RC_OK (0)
 #define RC_ERR (-1)
@@ -634,6 +621,7 @@ static ssize_t on_readable(Connection *c) {
     return -1;
   } else if (r < 0) {
     LOG_E("recv %d with POLLIN\n", (int)r);
+    perror("recv"); // 对方断连会报Bad file descriptor
     return -1;
   }
   c->buf_idx += (size_t)r;
@@ -703,13 +691,13 @@ static void poll_loop(Server *server, const int server_fd) {
   fds[0].fd = server_fd;
   fds[0].events = POLLIN;
   server->client_num = 0;
-  while (!REQUIRE_STOP()) {
+  while (!REQUIRE_EXIT()) {
     const int timeout_ms = calc_timeout(server);
     const int n = poll(fds, (nfds_t)NFDS(server->client_num), timeout_ms);
-    if (n < 0) { // unlikely
+    if (unlikely(n < 0)) { // unlikely
       PERROR("poll");
       break;
-    } else if (unlikely(n == 0)) {
+    } else if (n == 0) {
       on_poll_timeout(server);
     } else {
       // these events should never happen to server fd
@@ -718,8 +706,7 @@ static void poll_loop(Server *server, const int server_fd) {
         // will this happen?
         LOG_W("server fd err\n");
       } else if (fds[0].revents & POLLIN) {
-        if (on_ready_accept(server, server_fd, fds) < 0) {
-        }
+        on_ready_accept(server, server_fd, fds);
       }
       // iterate over clients
       for (int i = 1; i < NFDS(server->client_num); ++i) {
@@ -753,31 +740,13 @@ static void poll_loop(Server *server, const int server_fd) {
     close(fds[i].fd);
   }
 }
-sig_atomic_t g_require_stop = 0;
-static void sig_handler(int signo, siginfo_t *info, void *context) {
-  (void)info;
-  (void)context;
-  if (signo == SIGINT) {
-    g_require_stop = 1;
-  }
-}
-static void setup_signal(void) {
-  struct sigaction act = {0};
-  act.sa_flags = SA_SIGINFO;
-  act.sa_sigaction = &sig_handler;
-  if (sigaction(SIGINT, &act, NULL) == -1) {
-    // signal() doesn't interrupt accept, but sigaction does
-    // why? To be tested on a native Linux machine
-    perror("sigaction");
-    exit(EXIT_FAILURE);
-  }
-}
 int main(void) {
-  setup_signal();
+  SetupSignal();
   uint16_t port = 8000;
   int backlog = 1;
   int fd = setup_tcp_server(port, backlog);
   assert(fd >= 0);
+  SetNonBlocking(fd);
   int value;
   socklen_t value_len = sizeof(value);
   int r = getsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &value, &value_len);

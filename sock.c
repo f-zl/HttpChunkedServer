@@ -1,6 +1,9 @@
 #include "sock.h"
 #include <assert.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
+#include <stdlib.h>
 #define REPORT_ERR_THEN_EXIT(msg)                                              \
   do {                                                                         \
     perror(msg);                                                               \
@@ -39,3 +42,16 @@ ssize_t send_all(int fd, const void *data, size_t data_len, int timeout_ms) {
   assert(total == data_len);
   return (ssize_t)total;
 }
+void SetNonBlocking(int fd) {
+  int flags = fcntl(fd, F_GETFL);
+  if (flags < 0) {
+    perror("fcntl");
+    abort();
+  }
+  flags |= O_NONBLOCK;
+  if (fcntl(fd, F_SETFL, flags) < 0) {
+    perror("fcntl");
+    abort();
+  }
+}
+bool IsWouldBlock(void) { return errno == EWOULDBLOCK || errno == EAGAIN; }
