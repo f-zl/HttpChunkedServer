@@ -522,7 +522,6 @@ static void process_post_request(Connection *c, SpanConstChar path,
 static int process_head(Connection *c, SpanConstChar method, SpanConstChar path,
                         struct phr_header headers[MAX_HDR_NUM],
                         size_t num_headers, size_t head_len) {
-  (void)path;
   if (is_get(method)) {
     // process and send response
     // for simplicity, discard extra data

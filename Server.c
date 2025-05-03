@@ -43,7 +43,7 @@ void PrintByteArray(const unsigned char b[], size_t len, const char *prefix,
 }
 #define LISTEN_FD_NUM (1) // 多少个fd用于listen
 #define NFDS(clientNum) (clientNum + LISTEN_FD_NUM)
-static int CalcTimeout() { return 1000; }
+
 static int OnReadyAccept(Server *server, int fd) {
   struct sockaddr_storage addr;
   socklen_t addrLen = sizeof(addr);
@@ -112,7 +112,6 @@ void AddToSendBuffer(Connection *c, const void *data, size_t len) {
     LOG_W("send buffer full\n");
   }
 }
-static Server *serverInstance;
 
 static void DoRecv(Connection *c) {
   assert(c->recvIdx + c->toRecv <= sizeof(c->recvBuf));
@@ -178,6 +177,7 @@ static Connection *CheckToAccept(Server *server) {
       c->closed = false;
       c->totalRecv = 0;
       c->totalSend = 0;
+      c->server = server;
       AppOnAccepted(c);
       return c;
     } else {
@@ -227,17 +227,6 @@ static nfds_t UpdateConnectionListAndConstructPollFds(Server *server,
   }
   return i;
 }
-void AppOnPollTimeout(Server *server) {
-  for (ListNodeBase *it = List_Begin(&server->connections.base);
-       it != List_End(&server->connections.base); it = it->next) {
-    Connection *c = &((ListNodeConnection *)it)->value;
-    if (c->totalSend != c->totalRecv) {
-      LOG_W("%d send %zu !=recv %zu\n", c->fd, c->totalSend, c->totalRecv);
-      c->totalSend = 0;
-      c->totalRecv = 0;
-    }
-  }
-}
 void PrintPollResult(const struct pollfd fds[], nfds_t nfds) {
   LOG_D("poll");
   for (nfds_t i = 0; i < nfds; ++i) {
@@ -264,7 +253,7 @@ static void PollLoop(Server *server, const int serverFd) {
   fds[0].events = POLLIN;
   nfds_t nfds = LISTEN_FD_NUM;
   while (!REQUIRE_EXIT()) {
-    int timeout = CalcTimeout();
+    int timeout = AppCalcTimeout(server);
     assert(nfds <= ARRAY_LEN(fds));
     int n = poll(fds, nfds, timeout);
     // PrintPollResult(&fds[LISTEN_FD_NUM], nfds - LISTEN_FD_NUM);
@@ -308,7 +297,6 @@ int main(void) {
   SetNonBlocking(serverFd); // man accept NOTES
   SetupSignal();
   Server server;
-  serverInstance = &server;
   List_Init(&server.connections.base, sizeof(Connection), MAX_CLIENT_NUM,
             &server.connections.nodeMemory[0].base);
   PollLoop(&server, serverFd);

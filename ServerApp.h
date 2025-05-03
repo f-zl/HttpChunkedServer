@@ -14,3 +14,6 @@ void AppOnError(Connection *c);
 bool AppOnAccepting(Server *server, const struct sockaddr_storage *addr,
                     socklen_t addrLen);
 void AppOnAccepted(Connection *c);
+void AppOnPollTimeout(Server *server);
+// 返回poll的timeout值，单位ms，-1为一直等待
+int AppCalcTimeout(Server *server);

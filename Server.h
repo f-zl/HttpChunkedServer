@@ -1,5 +1,6 @@
 #pragma once
 #include "List.h"
+#include "support.h" // TickType_t in application data
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -17,6 +18,7 @@ typedef struct {
   size_t prevbuflen; // used by picohttpparser
   int32_t content_len;
 } HttpState;
+struct Server;
 typedef struct Connection {
   // 先把buffer、应用层数据都放这里
   // 后面根据多协议、用户BYOB的需求重构吧
@@ -33,6 +35,7 @@ typedef struct Connection {
   size_t totalSend;
 
   HttpState http;
+  struct Server *server;
 } Connection;
 
 DEFINE_LIST_NODE_TYPE(ListNodeConnection, Connection)
@@ -41,6 +44,7 @@ DEFINE_LIST_TYPE(ListConnection, ListNodeConnection, MAX_CLIENT_NUM)
 typedef struct Server {
   ListConnection connections;
   int toAccept; // 本循环里要加入链表的新连接，-1表示没有。用于延迟加入，使得循环里List和pollfd保持一致
+  TickType_t lastSendTick;
 } Server;
 
 void MyClose(Connection *c);
