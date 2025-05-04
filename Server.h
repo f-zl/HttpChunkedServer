@@ -49,4 +49,5 @@ typedef struct ElServer {
 
 void EL_Close(ElConnection *c);
 void EL_SetupToRecv(ElConnection *c, size_t toRecv, size_t recvd);
-void EL_AddToSendBuffer(ElConnection *c, const void *data, size_t len);
+// 返回大小是否足够，如果大小不够，则所有数据都不会拷贝
+bool EL_AddToSendBuffer(ElConnection *c, const void *data, size_t len);

@@ -103,14 +103,16 @@ static void DoSend(ElConnection *c) {
     }
   }
 }
-void EL_AddToSendBuffer(ElConnection *c, const void *data, size_t len) {
+bool EL_AddToSendBuffer(ElConnection *c, const void *data, size_t len) {
   size_t sendBufUsed = (c->sendIdx + c->toSend);
-  if (sendBufUsed + len < SEND_BUF_LEN) {
+  bool sufficient = (sendBufUsed + len < SEND_BUF_LEN);
+  if (sufficient) {
     memcpy(&c->sendBuf[c->sendIdx + c->toSend], data, len);
     c->toSend += len;
   } else {
     LOG_W("send buffer full\n");
   }
+  return sufficient;
 }
 
 static void DoRecv(ElConnection *c) {
