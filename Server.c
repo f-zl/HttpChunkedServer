@@ -10,11 +10,11 @@
 #include <string.h>
 #include <sys/socket.h>
 
-void MyClose(Connection *c) {
+void EL_Close(ElConnection *c) {
   close(c->fd);
   c->closed = true;
 }
-void SetupToRecv(Connection *c, size_t toRecv, size_t recvd) {
+void EL_SetupToRecv(ElConnection *c, size_t toRecv, size_t recvd) {
   assert(recvd < toRecv);
   c->toRecv = toRecv - recvd;
   c->recvIdx = recvd;
@@ -44,7 +44,7 @@ void PrintByteArray(const unsigned char b[], size_t len, const char *prefix,
 #define LISTEN_FD_NUM (1) // 多少个fd用于listen
 #define NFDS(clientNum) (clientNum + LISTEN_FD_NUM)
 
-static int OnReadyAccept(Server *server, int fd) {
+static int OnReadyAccept(ElServer *server, int fd) {
   struct sockaddr_storage addr;
   socklen_t addrLen = sizeof(addr);
   // 必须先accept，通过close来拒绝连接
@@ -65,7 +65,7 @@ static int OnReadyAccept(Server *server, int fd) {
   // 到循环结束再检查链表是否还有空间
   return 0;
 }
-static int CheckAccept(Server *server, struct pollfd *fds) {
+static int CheckAccept(ElServer *server, struct pollfd *fds) {
   if (unlikely(fds->revents & POLLERR)) {
     // will this happen?
     LOG_W("server fd err\n");
@@ -80,7 +80,7 @@ static int CheckAccept(Server *server, struct pollfd *fds) {
 // 调用者需要知道
 // 是否已经发成功，是否是后面再发，是否是其他错误
 // 调用者可以用toSend来检查
-static void DoSend(Connection *c) {
+static void DoSend(ElConnection *c) {
   assert(c->sendIdx + c->toSend <= sizeof(c->sendBuf));
   assert(c->toSend > 0);
   ssize_t r = send(c->fd, &c->sendBuf[c->sendIdx], c->toSend, 0);
@@ -103,7 +103,7 @@ static void DoSend(Connection *c) {
     }
   }
 }
-void AddToSendBuffer(Connection *c, const void *data, size_t len) {
+void EL_AddToSendBuffer(ElConnection *c, const void *data, size_t len) {
   size_t sendBufUsed = (c->sendIdx + c->toSend);
   if (sendBufUsed + len < SEND_BUF_LEN) {
     memcpy(&c->sendBuf[c->sendIdx + c->toSend], data, len);
@@ -113,7 +113,7 @@ void AddToSendBuffer(Connection *c, const void *data, size_t len) {
   }
 }
 
-static void DoRecv(Connection *c) {
+static void DoRecv(ElConnection *c) {
   assert(c->recvIdx + c->toRecv <= sizeof(c->recvBuf));
   assert(c->toRecv > 0);
   ssize_t r = recv(c->fd, &c->recvBuf[c->recvIdx], c->toRecv, 0);
@@ -133,18 +133,18 @@ static void DoRecv(Connection *c) {
     AppOnPeerClose(c);
   }
 }
-static void CheckConnections(Server *server, struct pollfd fds[]) {
+static void CheckConnections(ElServer *server, struct pollfd fds[]) {
   size_t i = 0;
   FlNodeBase *it;
   for (it = FL_Begin(&server->connections.base);
        it != FL_End(&server->connections.base); it = it->next) {
-    Connection *c = &((ListNodeConnection *)it)->value;
+    ElConnection *c = &((ListNodeConnection *)it)->value;
     assert(c->fd == fds[i].fd);
     const short revents = fds[i].revents;
     if (revents & POLLERR) {
       LOG_W("%d err\n", fds[i].fd);
       // 需要++i，因此不continue
-      MyClose(c);
+      EL_Close(c);
     }
     if (revents & POLLIN) {
       DoRecv(c);
@@ -156,7 +156,7 @@ static void CheckConnections(Server *server, struct pollfd fds[]) {
       // 测试下来在Linux上对方主动关闭TCP连接，不会报POLLHUP
       // 应该应用层处理？这里先相应关闭吧
       LOG_D("close %d\n", c->fd);
-      MyClose(c);
+      EL_Close(c);
     }
     ++i;
   }
@@ -164,11 +164,11 @@ static void CheckConnections(Server *server, struct pollfd fds[]) {
 // 新的连接和关闭都先保留在链表里，使得链表在循环中和pollfd保持一致
 // 循环结束后，需要根据连接、关闭情况更新链表
 // 成功则返回Connection * (用于后面PushBackFds)，否则返回NULL
-static Connection *CheckToAccept(Server *server) {
+static ElConnection *CheckToAccept(ElServer *server) {
   if (server->toAccept != -1) {
     FlNodeBase *node = FL_EmplaceFront(&server->connections.base);
     if (node != NULL) {
-      Connection *c = &((ListNodeConnection *)node)->value;
+      ElConnection *c = &((ListNodeConnection *)node)->value;
       c->fd = server->toAccept;
       c->toSend = 0;
       c->sendIdx = 0;
@@ -187,7 +187,7 @@ static Connection *CheckToAccept(Server *server) {
   }
   return NULL;
 }
-static void PushBackFds(Connection *c, struct pollfd *pfd) {
+static void PushBackFds(ElConnection *c, struct pollfd *pfd) {
   pfd->fd = c->fd;
   pfd->events = POLLHUP;
   if (c->toRecv > 0) {
@@ -199,7 +199,7 @@ static void PushBackFds(Connection *c, struct pollfd *pfd) {
     // LOG_D(" OUT");
   }
 }
-static nfds_t UpdateConnectionListAndConstructPollFds(Server *server,
+static nfds_t UpdateConnectionListAndConstructPollFds(ElServer *server,
                                                       struct pollfd fds[]) {
   // 延迟处理链表的删除、新增，从而在循环中使链表和fds保持一致
 
@@ -210,7 +210,7 @@ static nfds_t UpdateConnectionListAndConstructPollFds(Server *server,
   nfds_t i = 0;
   for (FlNodeBase *it = FL_BeforeBegin(&server->connections.base);
        it->next != FL_End(&server->connections.base);) {
-    Connection *c = &((ListNodeConnection *)(it->next))->value;
+    ElConnection *c = &((ListNodeConnection *)(it->next))->value;
     if (c->closed) {
       FL_EraseAfter(&server->connections.base, it);
     } else {
@@ -220,7 +220,7 @@ static nfds_t UpdateConnectionListAndConstructPollFds(Server *server,
     }
   }
 
-  Connection *c = CheckToAccept(server);
+  ElConnection *c = CheckToAccept(server);
   if (c != NULL) {
     PushBackFds(c, &fds[i]);
     ++i;
@@ -247,7 +247,7 @@ void PrintPollResult(const struct pollfd fds[], nfds_t nfds) {
   LOG_D("\n");
 }
 static void AppOnPollErr() { exit(1); }
-static void PollLoop(Server *server, const int serverFd) {
+static void PollLoop(ElServer *server, const int serverFd) {
   struct pollfd fds[NFDS(MAX_CLIENT_NUM)];
   fds[0].fd = serverFd;
   fds[0].events = POLLIN;
@@ -296,13 +296,13 @@ int main(void) {
   }
   SetNonBlocking(serverFd); // man accept NOTES
   SetupSignal();
-  Server server;
-  FL_Init(&server.connections.base, sizeof(Connection), MAX_CLIENT_NUM);
+  ElServer server;
+  FL_Init(&server.connections.base, sizeof(ElConnection), MAX_CLIENT_NUM);
   PollLoop(&server, serverFd);
   close(serverFd);
   for (FlNodeBase *it = FL_Begin(&server.connections.base);
        it != FL_End(&server.connections.base); it = it->next) {
-    Connection *c = &((ListNodeConnection *)it)->value;
+    ElConnection *c = &((ListNodeConnection *)it)->value;
     close(c->fd);
   }
   LOG_D("exit\n");

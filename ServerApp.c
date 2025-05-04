@@ -37,17 +37,17 @@ static const char NOT_FOUND_RESPONSE[77] =
 #define MAX_CHUNK_LEN_DIGIT 3
 // 最多多少个hex char可以表示长度，3个则支持最长fff长度的chunk
 
-void AppOnPeerClose(Connection *c) { MyClose(c); }
-void AppOnError(Connection *c) { MyClose(c); }
-bool AppOnAccepting(Server *server, const struct sockaddr_storage *addr,
+void AppOnPeerClose(ElConnection *c) { EL_Close(c); }
+void AppOnError(ElConnection *c) { EL_Close(c); }
+bool AppOnAccepting(ElServer *server, const struct sockaddr_storage *addr,
                     socklen_t addrLen) {
   (void)server;
   (void)addr;
   (void)addrLen;
   return true;
 }
-void AppOnAccepted(Connection *c) { SetupToRecv(c, RECV_BUF_LEN, 0); }
-void AppOnSend(Connection *c) { (void)c; }
+void AppOnAccepted(ElConnection *c) { EL_SetupToRecv(c, RECV_BUF_LEN, 0); }
+void AppOnSend(ElConnection *c) { (void)c; }
 static bool is_version(SpanConstChar path) {
   const char *p = "/version";
   size_t l = strlen(p);
@@ -102,28 +102,28 @@ static bool is_image(SpanConstChar path) {
   }
   return memcmp(path.buf, p, l) == 0;
 }
-static void send_content_length(Connection *c, size_t len) {
+static void send_content_length(ElConnection *c, size_t len) {
   assert(len <= 9999);
   char s[8];
   size_t l = num_to_four_chars((int)len, s);
   assert(l <= 4);
   memcpy(&s[l], "\r\n\r\n", 4);
-  AddToSendBuffer(c, s, l + 4);
+  EL_AddToSendBuffer(c, s, l + 4);
 }
 // HTTP 200
-static void send_ok_response(Connection *c, const void *body,
+static void send_ok_response(ElConnection *c, const void *body,
                              size_t body_len) { // 200
   assert(body_len <= 9999);                     // 最大支持4 digits
   if (body_len > 0) {
-    AddToSendBuffer(c, OK_CONTENT_LENGTH_RESPONSE, OK_CONTENT_LENGTH_LEN);
+    EL_AddToSendBuffer(c, OK_CONTENT_LENGTH_RESPONSE, OK_CONTENT_LENGTH_LEN);
     send_content_length(c, body_len);
-    AddToSendBuffer(c, body, body_len);
+    EL_AddToSendBuffer(c, body, body_len);
   } else {
-    AddToSendBuffer(c, OK_CONTENT_LENGTH_RESPONSE,
-                    sizeof(OK_CONTENT_LENGTH_RESPONSE));
+    EL_AddToSendBuffer(c, OK_CONTENT_LENGTH_RESPONSE,
+                       sizeof(OK_CONTENT_LENGTH_RESPONSE));
   }
 }
-static void send_chunk_with_data(Connection *c, const void *chunk, int len) {
+static void send_chunk_with_data(ElConnection *c, const void *chunk, int len) {
   assert(len > 0 && len <= 0xfff); // MAX_CHUNK_LEN_DIGIT设定了最多3位
   char length_line[MAX_CHUNK_LEN_DIGIT + 2];
   // 需要根据len的实际值计算长度，写入length_line
@@ -149,9 +149,9 @@ static void send_chunk_with_data(Connection *c, const void *chunk, int len) {
     length_line[4] = '\n';
     line_len = 5;
   }
-  AddToSendBuffer(c, length_line, line_len);
-  AddToSendBuffer(c, chunk, (size_t)len);
-  AddToSendBuffer(c, "\r\n", 2);
+  EL_AddToSendBuffer(c, length_line, line_len);
+  EL_AddToSendBuffer(c, chunk, (size_t)len);
+  EL_AddToSendBuffer(c, "\r\n", 2);
 }
 
 static uint32_t g_tick = 0;
@@ -161,27 +161,27 @@ typedef struct {
 } Param;
 static Param g_param = {0x12345678, 0x90abcdef};
 
-static void send_ok_chunked_response(Connection *c) {
-  AddToSendBuffer(c, OK_CHUNKED_RESPONSE, sizeof(OK_CHUNKED_RESPONSE));
+static void send_ok_chunked_response(ElConnection *c) {
+  EL_AddToSendBuffer(c, OK_CHUNKED_RESPONSE, sizeof(OK_CHUNKED_RESPONSE));
   uint32_t t = htonl(g_tick);
   send_chunk_with_data(c, &t, 4);
   c->server->lastSendTick = xTaskGetTickCount();
 }
 // HTTP 400
-static void send_bad_request_response(Connection *c, const void *body,
+static void send_bad_request_response(ElConnection *c, const void *body,
                                       size_t body_len) {
   assert(body_len <= 9999); // 最大支持4 digits
   if (body_len > 0) {
-    AddToSendBuffer(c, BAD_REQUEST_CONTENT_LENGTH_RESPONSE,
-                    BAD_REQUEST_CONTENT_LENGTH_LEN);
+    EL_AddToSendBuffer(c, BAD_REQUEST_CONTENT_LENGTH_RESPONSE,
+                       BAD_REQUEST_CONTENT_LENGTH_LEN);
     send_content_length(c, body_len);
-    AddToSendBuffer(c, body, body_len);
+    EL_AddToSendBuffer(c, body, body_len);
   } else {
-    AddToSendBuffer(c, BAD_REQUEST_CONTENT_LENGTH_RESPONSE,
-                    sizeof(BAD_REQUEST_CONTENT_LENGTH_RESPONSE));
+    EL_AddToSendBuffer(c, BAD_REQUEST_CONTENT_LENGTH_RESPONSE,
+                       sizeof(BAD_REQUEST_CONTENT_LENGTH_RESPONSE));
   }
 }
-static void on_get_param(Connection *c, uint16_t addr, uint16_t len) {
+static void on_get_param(ElConnection *c, uint16_t addr, uint16_t len) {
   if ((len > 0) && (addr + len <= sizeof(Param))) {
     char *p = (char *)&g_param;
     send_ok_response(c, &p[addr], len);
@@ -189,7 +189,7 @@ static void on_get_param(Connection *c, uint16_t addr, uint16_t len) {
     send_bad_request_response(c, NULL, 0);
   }
 }
-static void process_get_request(Connection *c, SpanConstChar path) {
+static void process_get_request(ElConnection *c, SpanConstChar path) {
   if (is_version(path)) {
     const char *p = "1.1.0 " __DATE__ " " __TIME__;
     send_ok_response(c, p, strlen(p));
@@ -203,7 +203,7 @@ static void process_get_request(Connection *c, SpanConstChar path) {
       on_get_param(c, addr, len);
     } else {
       // 404
-      AddToSendBuffer(c, NOT_FOUND_RESPONSE, sizeof(NOT_FOUND_RESPONSE));
+      EL_AddToSendBuffer(c, NOT_FOUND_RESPONSE, sizeof(NOT_FOUND_RESPONSE));
     }
   }
 }
@@ -232,7 +232,7 @@ static int32_t find_content_length(struct phr_header headers[MAX_HDR_NUM],
   }
   return -2;
 }
-static void on_post_param(Connection *c, const unsigned char *body,
+static void on_post_param(ElConnection *c, const unsigned char *body,
                           int32_t content_len) {
   assert(content_len >= 0);
   const uint16_t header_len = 2;   // HTTP body里，取2字节用作地址信息
@@ -255,7 +255,7 @@ static void on_post_param(Connection *c, const unsigned char *body,
 }
 #define MIN_IMAGE_SIZE (1)
 #define MAX_IMAGE_SIZE (100)
-static void on_post_image(Connection *c, const unsigned char *body,
+static void on_post_image(ElConnection *c, const unsigned char *body,
                           int32_t content_len) {
   LOG_D("POST /image %d", content_len);
   for (int32_t i = 0; i < content_len; ++i) {
@@ -263,14 +263,14 @@ static void on_post_image(Connection *c, const unsigned char *body,
   }
   LOG_D("\n");
   if (content_len >= MIN_IMAGE_SIZE && content_len <= MAX_IMAGE_SIZE) {
-    AddToSendBuffer(c, OK_CONTENT_LENGTH_RESPONSE,
-                    sizeof(OK_CONTENT_LENGTH_RESPONSE));
+    EL_AddToSendBuffer(c, OK_CONTENT_LENGTH_RESPONSE,
+                       sizeof(OK_CONTENT_LENGTH_RESPONSE));
   } else {
-    AddToSendBuffer(c, BAD_REQUEST_CONTENT_LENGTH_RESPONSE,
-                    sizeof(BAD_REQUEST_CONTENT_LENGTH_RESPONSE));
+    EL_AddToSendBuffer(c, BAD_REQUEST_CONTENT_LENGTH_RESPONSE,
+                       sizeof(BAD_REQUEST_CONTENT_LENGTH_RESPONSE));
   }
 }
-static void process_post_request(Connection *c, SpanConstChar path,
+static void process_post_request(ElConnection *c, SpanConstChar path,
                                  const unsigned char *body,
                                  int32_t content_len) {
   // POST body可传数据，如果有参数，用body传二进制数据
@@ -281,10 +281,11 @@ static void process_post_request(Connection *c, SpanConstChar path,
     on_post_image(c, body, content_len);
   } else {
     // 404
-    AddToSendBuffer(c, NOT_FOUND_RESPONSE, sizeof(NOT_FOUND_RESPONSE));
+    EL_AddToSendBuffer(c, NOT_FOUND_RESPONSE, sizeof(NOT_FOUND_RESPONSE));
   }
 }
-static int ProcessHead(Connection *c, SpanConstChar method, SpanConstChar path,
+static int ProcessHead(ElConnection *c, SpanConstChar method,
+                       SpanConstChar path,
                        struct phr_header headers[MAX_HDR_NUM],
                        size_t num_headers, size_t head_len) {
   if (is_get(method)) {
@@ -324,7 +325,7 @@ static int ProcessHead(Connection *c, SpanConstChar method, SpanConstChar path,
     return RC_ERR;
   }
 }
-static int OnRecvHead(Connection *c) {
+static int OnRecvHead(ElConnection *c) {
   SpanConstChar method;
   SpanConstChar path;
   int minor_version;
@@ -358,12 +359,12 @@ static int OnRecvHead(Connection *c) {
   }
 }
 // 抽象recv buf, send buf，改成其方法
-static void ClearRecvBuf(Connection *c) {
+static void ClearRecvBuf(ElConnection *c) {
   c->recvIdx = 0;
   c->toRecv = RECV_BUF_LEN;
   // toRecv should be as large as possible for HTTP
 }
-static int on_recv_body(Connection *c) {
+static int on_recv_body(ElConnection *c) {
   if (c->recvIdx < (size_t)c->http.content_len) {
     return RC_INCOMPLETE;
   }
@@ -371,7 +372,7 @@ static int on_recv_body(Connection *c) {
   // 根据on_recv_head的实现，只会是POST (header数据存到哪里？)
   return RC_OK;
 }
-void AppOnRecv(Connection *c) {
+void AppOnRecv(ElConnection *c) {
   int rst;
   bool doClose = false;
   switch (c->http.state) {
@@ -400,13 +401,13 @@ void AppOnRecv(Connection *c) {
     break;
   }
   if (doClose) {
-    MyClose(c);
+    EL_Close(c);
   }
 }
-void AppOnPollTimeout(Server *server) {
+void AppOnPollTimeout(ElServer *server) {
   for (FlNodeBase *it = FL_Begin(&server->connections.base);
        it != FL_End(&server->connections.base); it = it->next) {
-    Connection *c = &((ListNodeConnection *)it)->value;
+    ElConnection *c = &((ListNodeConnection *)it)->value;
     if (c->http.state == kWaitSending) {
       ++g_tick;
       uint32_t t = htonl(g_tick);
@@ -422,10 +423,10 @@ void AppOnPollTimeout(Server *server) {
 }
 static const uint16_t PERIOD_MS = 1000;
 // 是否存在监听周期数据的client
-static bool has_listening_client(Server *server) {
+static bool has_listening_client(ElServer *server) {
   for (FlNodeBase *it = FL_Begin(&server->connections.base);
        it != FL_End(&server->connections.base); it = it->next) {
-    Connection *c = &((ListNodeConnection *)it)->value;
+    ElConnection *c = &((ListNodeConnection *)it)->value;
     if (c->http.state == kWaitSending) {
       return true;
     }
@@ -441,7 +442,7 @@ static int to_next(uint16_t period, TickType_t last_send_tick) {
   return (int)((TickType_t)period - elapsed);
 }
 // 返回poll的timeout值，单位ms，-1为一直等待
-int AppCalcTimeout(Server *server) {
+int AppCalcTimeout(ElServer *server) {
   int timeout;
   if (has_listening_client(server)) {
     timeout = to_next(PERIOD_MS, server->lastSendTick);

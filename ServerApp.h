@@ -1,19 +1,19 @@
 #pragma once
 #include <arpa/inet.h>
 #include <stdbool.h>
-typedef struct Server Server;
-typedef struct Connection Connection;
+typedef struct ElServer ElServer;
+typedef struct ElConnection ElConnection;
 // recv返回>0时调用
-void AppOnRecv(Connection *c);
+void AppOnRecv(ElConnection *c);
 // send返回>0时调用
-void AppOnSend(Connection *c);
+void AppOnSend(ElConnection *c);
 
-void AppOnPeerClose(Connection *c);
-void AppOnError(Connection *c);
+void AppOnPeerClose(ElConnection *c);
+void AppOnError(ElConnection *c);
 // 返回应用层是否觉得应该接收
-bool AppOnAccepting(Server *server, const struct sockaddr_storage *addr,
+bool AppOnAccepting(ElServer *server, const struct sockaddr_storage *addr,
                     socklen_t addrLen);
-void AppOnAccepted(Connection *c);
-void AppOnPollTimeout(Server *server);
+void AppOnAccepted(ElConnection *c);
+void AppOnPollTimeout(ElServer *server);
 // 返回poll的timeout值，单位ms，-1为一直等待
-int AppCalcTimeout(Server *server);
+int AppCalcTimeout(ElServer *server);

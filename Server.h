@@ -18,8 +18,8 @@ typedef struct {
   size_t prevbuflen; // used by picohttpparser
   int32_t content_len;
 } HttpState;
-struct Server;
-typedef struct Connection {
+struct ElServer;
+typedef struct ElConnection {
   // 先把buffer、应用层数据都放这里
   // 后面根据多协议、用户BYOB的需求重构吧
   int fd;
@@ -35,18 +35,18 @@ typedef struct Connection {
   size_t totalSend;
 
   HttpState http;
-  struct Server *server;
-} Connection;
+  struct ElServer *server;
+} ElConnection;
 
-DEFINE_LIST_NODE_TYPE(ListNodeConnection, Connection)
+DEFINE_LIST_NODE_TYPE(ListNodeConnection, ElConnection)
 DEFINE_LIST_TYPE(ListConnection, ListNodeConnection, MAX_CLIENT_NUM)
 
-typedef struct Server {
+typedef struct ElServer {
   ListConnection connections;
   int toAccept; // 本循环里要加入链表的新连接，-1表示没有。用于延迟加入，使得循环里List和pollfd保持一致
   TickType_t lastSendTick;
-} Server;
+} ElServer;
 
-void MyClose(Connection *c);
-void SetupToRecv(Connection *c, size_t toRecv, size_t recvd);
-void AddToSendBuffer(Connection *c, const void *data, size_t len);
+void EL_Close(ElConnection *c);
+void EL_SetupToRecv(ElConnection *c, size_t toRecv, size_t recvd);
+void EL_AddToSendBuffer(ElConnection *c, const void *data, size_t len);
