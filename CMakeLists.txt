@@ -16,7 +16,7 @@ add_executable(http_chucnked_server
 target_link_libraries(http_chucnked_server pico support)
 
 add_executable(server
-	List.c List.h
+	ForwardList.c ForwardList.h
 	Server.c Server.h
 	ServerApp.c ServerApp.h
 )

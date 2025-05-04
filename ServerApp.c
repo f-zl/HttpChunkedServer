@@ -387,8 +387,8 @@ void AppOnRecv(Connection *c) {
   }
 }
 void AppOnPollTimeout(Server *server) {
-  for (ListNodeBase *it = List_Begin(&server->connections.base);
-       it != List_End(&server->connections.base); it = it->next) {
+  for (FlNodeBase *it = FL_Begin(&server->connections.base);
+       it != FL_End(&server->connections.base); it = it->next) {
     Connection *c = &((ListNodeConnection *)it)->value;
     if (c->http.state == kWaitSending) {
       ++g_tick;
@@ -406,8 +406,8 @@ void AppOnPollTimeout(Server *server) {
 static const uint16_t PERIOD_MS = 1000;
 // 是否存在监听周期数据的client
 static bool has_listening_client(Server *server) {
-  for (ListNodeBase *it = List_Begin(&server->connections.base);
-       it != List_End(&server->connections.base); it = it->next) {
+  for (FlNodeBase *it = FL_Begin(&server->connections.base);
+       it != FL_End(&server->connections.base); it = it->next) {
     Connection *c = &((ListNodeConnection *)it)->value;
     if (c->http.state == kWaitSending) {
       return true;

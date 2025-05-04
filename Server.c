@@ -1,5 +1,5 @@
 #include "Server.h"
-#include "List.h"
+#include "ForwardList.h"
 #include "ServerApp.h"
 #include "sock.h"
 #include "support.h"
@@ -135,9 +135,9 @@ static void DoRecv(Connection *c) {
 }
 static void CheckConnections(Server *server, struct pollfd fds[]) {
   size_t i = 0;
-  ListNodeBase *it;
-  for (it = List_Begin(&server->connections.base);
-       it != List_End(&server->connections.base); it = it->next) {
+  FlNodeBase *it;
+  for (it = FL_Begin(&server->connections.base);
+       it != FL_End(&server->connections.base); it = it->next) {
     Connection *c = &((ListNodeConnection *)it)->value;
     assert(c->fd == fds[i].fd);
     const short revents = fds[i].revents;
@@ -166,7 +166,7 @@ static void CheckConnections(Server *server, struct pollfd fds[]) {
 // 成功则返回Connection * (用于后面PushBackFds)，否则返回NULL
 static Connection *CheckToAccept(Server *server) {
   if (server->toAccept != -1) {
-    ListNodeBase *node = List_EmplaceBack(&server->connections.base);
+    FlNodeBase *node = FL_EmplaceFront(&server->connections.base);
     if (node != NULL) {
       Connection *c = &((ListNodeConnection *)node)->value;
       c->fd = server->toAccept;
@@ -208,11 +208,11 @@ static nfds_t UpdateConnectionListAndConstructPollFds(Server *server,
   // 遍历连接的链表，根据收发请求标记POLLIN, POLLOUT
 
   nfds_t i = 0;
-  for (ListNodeBase *it = List_Begin(&server->connections.base);
-       it != List_End(&server->connections.base);) {
-    Connection *c = &((ListNodeConnection *)it)->value;
+  for (FlNodeBase *it = FL_BeforeBegin(&server->connections.base);
+       it->next != FL_End(&server->connections.base);) {
+    Connection *c = &((ListNodeConnection *)(it->next))->value;
     if (c->closed) {
-      it = List_Erase(&server->connections.base, it);
+      FL_EraseAfter(&server->connections.base, it);
     } else {
       PushBackFds(c, &fds[i]);
       ++i;
@@ -297,12 +297,11 @@ int main(void) {
   SetNonBlocking(serverFd); // man accept NOTES
   SetupSignal();
   Server server;
-  List_Init(&server.connections.base, sizeof(Connection), MAX_CLIENT_NUM,
-            &server.connections.nodeMemory[0].base);
+  FL_Init(&server.connections.base, sizeof(Connection), MAX_CLIENT_NUM);
   PollLoop(&server, serverFd);
   close(serverFd);
-  for (ListNodeBase *it = List_Begin(&server.connections.base);
-       it != List_End(&server.connections.base); it = it->next) {
+  for (FlNodeBase *it = FL_Begin(&server.connections.base);
+       it != FL_End(&server.connections.base); it = it->next) {
     Connection *c = &((ListNodeConnection *)it)->value;
     close(c->fd);
   }
