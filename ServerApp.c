@@ -348,7 +348,11 @@ static int OnRecvHead(Connection *c) {
   }
 }
 // 抽象recv buf, send buf，改成其方法
-static void ClearRecvBuf(Connection *c) { c->recvIdx = 0; }
+static void ClearRecvBuf(Connection *c) {
+  c->recvIdx = 0;
+  c->toRecv = RECV_BUF_LEN;
+  // toRecv should be as large as possible for HTTP
+}
 void AppOnRecv(Connection *c) {
   int rst;
   bool doClose = false;
