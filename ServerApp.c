@@ -19,6 +19,7 @@
 #define TRANSFER_ENCODING_CHUNKED_HEADER "Transfer-Encoding: chunked\r\n"
 #define CONTENT_LENGTH_HEADER "Content-Length: "
 
+// TODO 缩短下名字，使得容易理解
 static const char OK_CHUNKED_RESPONSE[79] =
     OK_LINE ALLOW_CORS_HEADER TRANSFER_ENCODING_CHUNKED_HEADER "\r\n";
 // 到Content-Length: 处，不含数值：长度65
@@ -252,11 +253,22 @@ static void on_post_param(Connection *c, const unsigned char *body,
     send_bad_request_response(c, p, strlen(p));
   }
 }
+#define MIN_IMAGE_SIZE (1)
+#define MAX_IMAGE_SIZE (100)
 static void on_post_image(Connection *c, const unsigned char *body,
                           int32_t content_len) {
-  (void)c;
-  (void)body;
-  LOG_D("POST /image %d\n", content_len);
+  LOG_D("POST /image %d", content_len);
+  for (int32_t i = 0; i < content_len; ++i) {
+    LOG_D(" %02x", body[i]);
+  }
+  LOG_D("\n");
+  if (content_len >= MIN_IMAGE_SIZE && content_len <= MAX_IMAGE_SIZE) {
+    AddToSendBuffer(c, OK_CONTENT_LENGTH_RESPONSE,
+                    sizeof(OK_CONTENT_LENGTH_RESPONSE));
+  } else {
+    AddToSendBuffer(c, BAD_REQUEST_CONTENT_LENGTH_RESPONSE,
+                    sizeof(BAD_REQUEST_CONTENT_LENGTH_RESPONSE));
+  }
 }
 static void process_post_request(Connection *c, SpanConstChar path,
                                  const unsigned char *body,
@@ -266,9 +278,7 @@ static void process_post_request(Connection *c, SpanConstChar path,
   if (is_param(path)) {
     on_post_param(c, body, content_len);
   } else if (is_image(path)) {
-    on_post_image(c, NULL, content_len);
-    // 暂时不支持
-    AddToSendBuffer(c, NOT_FOUND_RESPONSE, sizeof(NOT_FOUND_RESPONSE));
+    on_post_image(c, body, content_len);
   } else {
     // 404
     AddToSendBuffer(c, NOT_FOUND_RESPONSE, sizeof(NOT_FOUND_RESPONSE));
@@ -353,6 +363,14 @@ static void ClearRecvBuf(Connection *c) {
   c->toRecv = RECV_BUF_LEN;
   // toRecv should be as large as possible for HTTP
 }
+static int on_recv_body(Connection *c) {
+  if (c->recvIdx < (size_t)c->http.content_len) {
+    return RC_INCOMPLETE;
+  }
+  // 收满body，可以处理
+  // 根据on_recv_head的实现，只会是POST (header数据存到哪里？)
+  return RC_OK;
+}
 void AppOnRecv(Connection *c) {
   int rst;
   bool doClose = false;
@@ -370,12 +388,11 @@ void AppOnRecv(Connection *c) {
     }
     break;
   case kReceivingBody:
-    LOG_W("Not implemented\n");
-    // LOG_D("recv %zu in body state\n", c->recvIdx);
-    // rst = on_recv_body(c);
-    // if (rst == RC_ERR) {
-    //   doClose=true;
-    // }
+    LOG_D("recv %zu in body state\n", c->recvIdx);
+    rst = on_recv_body(c);
+    if (rst == RC_ERR) {
+      doClose = true;
+    }
     break;
   default: // 其他状态都不该收到数据
     LOG_E("recv in state %d\n", c->http.state);
