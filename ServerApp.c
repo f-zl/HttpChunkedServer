@@ -116,10 +116,9 @@ static void SendContentLength(ElConnection *c, size_t len) {
   memcpy(&s[l], "\r\n\r\n", 4);
   EL_AddToSendBuffer(c, s, l + 4);
 }
-// HTTP 200
-static void SendOkResponse(ElConnection *c, const void *body,
-                           size_t body_len) { // 200
-  assert(body_len <= 9999);                   // 最大支持4 digits
+// HTTP 200 OK
+static void Send200(ElConnection *c, const void *body, size_t body_len) {
+  assert(body_len <= 9999); // 最大支持4 digits
   if (body_len > 0) {
     EL_AddToSendBuffer(c, OK_CONTENT_LENGTH_RESPONSE, OK_CONTENT_LENGTH_LEN);
     SendContentLength(c, body_len);
@@ -183,9 +182,7 @@ static void SendOkChunkedResponse(ElConnection *c) {
   SendChunkWithData(c, &t, 4);
   c->server->lastSendTick = xTaskGetTickCount();
 }
-// HTTP 400
-static void SendBadRequestResponse(ElConnection *c, const void *body,
-                                   size_t body_len) {
+static void Send400(ElConnection *c, const void *body, size_t body_len) {
   assert(body_len <= 9999); // 最大支持4 digits
   if (body_len > 0) {
     EL_AddToSendBuffer(c, BAD_REQUEST_CONTENT_LENGTH_RESPONSE,
@@ -197,18 +194,21 @@ static void SendBadRequestResponse(ElConnection *c, const void *body,
                        sizeof(BAD_REQUEST_CONTENT_LENGTH_RESPONSE));
   }
 }
+static void Send404(ElConnection *c) {
+  EL_AddToSendBuffer(c, NOT_FOUND_RESPONSE, sizeof(NOT_FOUND_RESPONSE));
+}
 static void OnGetParam(ElConnection *c, uint16_t addr, uint16_t len) {
   if ((len > 0) && (addr + len <= sizeof(Param))) {
     char *p = (char *)&g_param;
-    SendOkResponse(c, &p[addr], len);
+    Send200(c, &p[addr], len);
   } else {
-    SendBadRequestResponse(c, NULL, 0);
+    Send400(c, NULL, 0);
   }
 }
 static void ProcessGetRequest(ElConnection *c, SpanConstChar path) {
   if (IsVersion(path)) {
     const char *p = "1.1.0 " __DATE__ " " __TIME__;
-    SendOkResponse(c, p, strlen(p));
+    Send200(c, p, strlen(p));
   } else if (IsPeriodic(path)) {
     SendOkChunkedResponse(c);
     UpdateState(c, kWaitSending);
@@ -218,8 +218,7 @@ static void ProcessGetRequest(ElConnection *c, SpanConstChar path) {
     if (IsGetParam(path, &addr, &len)) { // 可能路径OK但参数误应该报另外的错
       OnGetParam(c, addr, len);
     } else {
-      // 404
-      EL_AddToSendBuffer(c, NOT_FOUND_RESPONSE, sizeof(NOT_FOUND_RESPONSE));
+      Send404(c);
     }
   }
 }
@@ -253,8 +252,8 @@ static void OnPostParam(ElConnection *c, const unsigned char *body,
   assert(contentLen >= 0);
   const uint16_t headerLen = 2;  // HTTP body里，取2字节用作地址信息
   if (contentLen <= headerLen) { // 只有header没有数值也是错误
-    const char *p = "Wrong format";
-    SendBadRequestResponse(c, p, strlen(p));
+    const char *p = "wrong format";
+    Send400(c, p, strlen(p));
     return;
   }
   const uint16_t addr = ReadUint16LE(body);
@@ -267,10 +266,10 @@ static void OnPostParam(ElConnection *c, const unsigned char *body,
   if ((size_t)addr + (size_t)valueLen <= sizeof(Param)) {
     char *p = (char *)&g_param;
     memcpy(&p[addr], &body[headerLen], (size_t)valueLen);
-    SendOkResponse(c, NULL, 0);
+    Send200(c, NULL, 0);
   } else {
-    const char *p = "Wrong value";
-    SendBadRequestResponse(c, p, strlen(p));
+    const char *p = "wrong value";
+    Send400(c, p, strlen(p));
   }
 }
 #define MIN_IMAGE_SIZE (1)
@@ -312,11 +311,9 @@ static void OnPostImage(ElConnection *c, const unsigned char *body,
   VerifyImageBuffer(g_imageBuffer, content_len);
 
   if (content_len >= MIN_IMAGE_SIZE && content_len <= MAX_IMAGE_SIZE) {
-    EL_AddToSendBuffer(c, OK_CONTENT_LENGTH_RESPONSE,
-                       sizeof(OK_CONTENT_LENGTH_RESPONSE));
+    Send200(c, NULL, 0);
   } else {
-    EL_AddToSendBuffer(c, BAD_REQUEST_CONTENT_LENGTH_RESPONSE,
-                       sizeof(BAD_REQUEST_CONTENT_LENGTH_RESPONSE));
+    Send400(c, NULL, 0);
   }
   c->recvBuf = g_recvBuf;
   c->recvBufCapacity = RECV_BUF_LEN;
@@ -335,8 +332,10 @@ static void OnPostImageIncomplete(ElConnection *c, size_t headLen,
     // 数据从recvBuf拷贝到imageBuf延后到body收完时进行
     c->recvBufCapacity = sizeof(g_imageBuffer);
   } else {
-    // TODO 应该回复400+reason
+    // TODO 应该回复400+reason，但怎么处理剩下要接收的数据？
     EL_Close(c);
+    // const char *reason = "wrong length";
+    // Send400(c,reason, strlen(reason));
   }
 }
 typedef enum { kImage, kParam } PostRequest;
@@ -366,8 +365,7 @@ static void ProcessPostRequest(ElConnection *c, SpanConstChar path,
   } else if (IsImage(path)) {
     OnPostImage(c, body, content_len);
   } else {
-    // 404
-    EL_AddToSendBuffer(c, NOT_FOUND_RESPONSE, sizeof(NOT_FOUND_RESPONSE));
+    Send404(c);
   }
 }
 static int ProcessHead(ElConnection *c, SpanConstChar method,
@@ -476,6 +474,8 @@ static int OnRecvBody(ElConnection *c) {
   return RC_OK;
 }
 void AppOnRecv(ElConnection *c) {
+  // 此处应该检查缓存收满的情况，以及应用层收满的情况
+  // 在这里重置recvBuf比在OnSend处重置的好处是可以加入收缓存检查
   int rst;
   bool doClose = false;
   switch (c->http.state) {
