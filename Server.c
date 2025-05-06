@@ -15,9 +15,9 @@ void EL_Close(ElConnection *c) {
   close(c->fd);
   c->closed = true;
 }
-void EL_SetupToRecv(ElConnection *c, size_t toRecv, size_t recvd) {
-  assert(recvd < toRecv);
-  c->toRecv = toRecv - recvd;
+void EL_SetupToRecv(ElConnection *c, size_t totalToRecv, size_t recvd) {
+  assert(recvd < totalToRecv);
+  c->toRecv = totalToRecv - recvd;
   c->recvIdx = recvd;
 }
 

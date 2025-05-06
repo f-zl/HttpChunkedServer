@@ -249,20 +249,24 @@ static int32_t FindContentLength(struct phr_header headers[MAX_HDR_NUM],
   return -2;
 }
 static void OnPostParam(ElConnection *c, const unsigned char *body,
-                        int32_t content_len) {
-  assert(content_len >= 0);
-  const uint16_t header_len = 2;   // HTTP body里，取2字节用作地址信息
-  if (content_len <= header_len) { // 只有header没有数值也是错误
+                        int32_t contentLen) {
+  assert(contentLen >= 0);
+  const uint16_t headerLen = 2;  // HTTP body里，取2字节用作地址信息
+  if (contentLen <= headerLen) { // 只有header没有数值也是错误
     const char *p = "Wrong format";
     SendBadRequestResponse(c, p, strlen(p));
     return;
   }
   const uint16_t addr = ReadUint16LE(body);
-  const int32_t value_len = content_len - header_len;
-  LOG_D("POST /param(%d,%d)\n", addr, value_len);
-  if ((size_t)addr + (size_t)value_len <= sizeof(Param)) {
+  const int32_t valueLen = contentLen - headerLen;
+  LOG_D("POST /param(%x,%d) [", addr, valueLen);
+  for (int32_t i = 0; i < valueLen; ++i) {
+    LOG_D(" %02x", body[i + headerLen]);
+  }
+  LOG_D(" ]\n");
+  if ((size_t)addr + (size_t)valueLen <= sizeof(Param)) {
     char *p = (char *)&g_param;
-    memcpy(&p[addr], &body[header_len], (size_t)value_len);
+    memcpy(&p[addr], &body[headerLen], (size_t)valueLen);
     SendOkResponse(c, NULL, 0);
   } else {
     const char *p = "Wrong value";
@@ -318,12 +322,10 @@ static void OnPostImage(ElConnection *c, const unsigned char *body,
   c->recvBufCapacity = RECV_BUF_LEN;
 }
 static void OnPostImageIncomplete(ElConnection *c, size_t headLen,
-                                  int32_t contentLen) {
+                                  int32_t contentLen, size_t recvdBodyLen) {
   // 用于测试多次接收文件
   memset(g_imageBuffer, 0xcc, sizeof(g_imageBuffer));
 
-  size_t recvdBodyLen = c->recvIdx - headLen;
-  LOG_D("contentLen %d body len %zu incomplete\n", contentLen, recvdBodyLen);
   if (contentLen >= MIN_IMAGE_SIZE && contentLen <= MAX_IMAGE_SIZE) {
     g_recvBuf = c->recvBuf;
     g_headLen = headLen;
@@ -333,7 +335,26 @@ static void OnPostImageIncomplete(ElConnection *c, size_t headLen,
     // 数据从recvBuf拷贝到imageBuf延后到body收完时进行
     c->recvBufCapacity = sizeof(g_imageBuffer);
   } else {
-    EL_Close(c); // 是否可以，是否还有其他的要做？
+    // TODO 应该回复400+reason
+    EL_Close(c);
+  }
+}
+typedef enum { kImage, kParam } PostRequest;
+static void OnPostIncomplete(ElConnection *c, size_t headLen,
+                             SpanConstChar path) {
+  size_t recvdBodyLen = c->recvIdx - headLen;
+  int32_t contentLen = c->http.contentLen;
+  LOG_D("contentLen %d body len %zu incomplete\n", contentLen, recvdBodyLen);
+
+  if (IsImage(path)) {
+    c->http.whichIncompleteRequest = kImage;
+    OnPostImageIncomplete(c, headLen, contentLen, recvdBodyLen);
+  } else if (IsParam(path)) {
+    c->http.whichIncompleteRequest = kParam;
+    EL_SetupToRecv(c, (size_t)contentLen, recvdBodyLen);
+  } else {
+    // TODO 应该回复404
+    EL_Close(c);
   }
 }
 static void ProcessPostRequest(ElConnection *c, SpanConstChar path,
@@ -381,7 +402,7 @@ static int ProcessHead(ElConnection *c, SpanConstChar method,
       // 是否要为body另开一个缓存？
       UpdateState(c, kReceivingBody);
       c->http.contentLen = contentLen;
-      OnPostImageIncomplete(c, headLen, contentLen);
+      OnPostIncomplete(c, headLen, path);
       return RC_INCOMPLETE;
     }
   } else {
@@ -441,10 +462,17 @@ static int OnRecvBody(ElConnection *c) {
     return RC_INCOMPLETE;
   }
   // 收满body，可以处理
-  // 根据on_recv_head的实现，只会是POST (header数据存到哪里？)
-  // FIXME 不一定是/image
-  // 是否保存header，然后重新走一遍parser？
-  OnPostImage(c, g_imageBuffer, c->http.contentLen);
+  // 根据OnRecvHead的实现，只会是POST (除content-length外没有header数据需要保存)
+  switch (c->http.whichIncompleteRequest) {
+  case likely(kImage):
+    OnPostImage(c, c->recvBuf, c->http.contentLen);
+    break;
+  case kParam:
+    OnPostParam(c, c->recvBuf, c->http.contentLen);
+    break;
+  default:
+    assert(0); // 如果是其他的，应该提前处理了，不会走到这里
+  }
   return RC_OK;
 }
 void AppOnRecv(ElConnection *c) {

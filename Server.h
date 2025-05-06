@@ -14,6 +14,8 @@ typedef enum {
 } HttpConnState;
 typedef struct {
   HttpConnState state;
+  // 标记是哪个请求没发完，用于一次接收得到的请求不完整时做记录
+  uint8_t whichIncompleteRequest;
   size_t prevBufLen; // used by picohttpparser
   int32_t contentLen;
 } HttpState;
@@ -51,6 +53,6 @@ typedef struct ElServer {
 } ElServer;
 
 void EL_Close(ElConnection *c);
-void EL_SetupToRecv(ElConnection *c, size_t toRecv, size_t recvd);
+void EL_SetupToRecv(ElConnection *c, size_t totalToRecv, size_t recvd);
 // 返回大小是否足够，如果大小不够，则所有数据都不会拷贝
 bool EL_AddToSendBuffer(ElConnection *c, const void *data, size_t len);
