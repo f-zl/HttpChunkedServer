@@ -11,9 +11,9 @@ typedef enum {
   kReceivingBody,
   kSending,
   kWaitSending // wait to send next chunked response
-} ConnectionState;
+} HttpConnState;
 typedef struct {
-  ConnectionState state;
+  HttpConnState state;
   size_t prevbuflen; // used by picohttpparser
   int32_t content_len;
 } HttpState;

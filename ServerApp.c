@@ -159,7 +159,17 @@ static void send_chunk_with_data(ElConnection *c, const void *chunk, int len) {
   EL_AddToSendBuffer(c, chunk, (size_t)len);
   EL_AddToSendBuffer(c, "\r\n", 2);
 }
-
+static void UpdateState(ElConnection *c, HttpConnState s) {
+  const char *name[] = {
+      "ReceivingHead",
+      "ReceivingBody",
+      "Sending",
+      "WaitSending",
+  };
+  assert(s < ARRAY_LEN(name));
+  printf("http state %s\n", name[s]);
+  c->http.state = s;
+}
 static uint32_t g_tick = 0;
 typedef struct {
   uint32_t param1;
@@ -169,7 +179,7 @@ static Param g_param = {0x12345678, 0x90abcdef};
 
 static void send_ok_chunked_response(ElConnection *c) {
   EL_AddToSendBuffer(c, OK_CHUNKED_RESPONSE, sizeof(OK_CHUNKED_RESPONSE));
-  uint32_t t = htonl(g_tick);
+  uint32_t t = htonl(++g_tick);
   send_chunk_with_data(c, &t, 4);
   c->server->lastSendTick = xTaskGetTickCount();
 }
@@ -201,7 +211,7 @@ static void process_get_request(ElConnection *c, SpanConstChar path) {
     send_ok_response(c, p, strlen(p));
   } else if (is_periodic(path)) {
     send_ok_chunked_response(c);
-    c->http.state = kWaitSending;
+    UpdateState(c, kWaitSending);
   } else {
     uint16_t addr;
     uint16_t len;
@@ -369,7 +379,7 @@ static int ProcessHead(ElConnection *c, SpanConstChar method,
       // if is /image, copy data to image buffer, store future data there
       // 怎么存放header (不用存，用个flag知道是/image即可)
       // 是否要为body另开一个缓存？
-      c->http.state = kReceivingBody;
+      UpdateState(c, kReceivingBody);
       c->http.content_len = content_len;
       OnPostImageIncomplete(c, head_len, content_len);
       return RC_INCOMPLETE;
@@ -399,7 +409,7 @@ static int OnRecvHead(ElConnection *c) {
     int r = ProcessHead(c, method, path, headers, num_headers, (size_t)pret);
     switch (r) {
     case RC_INCOMPLETE: // head is complete while full request not
-      c->http.state = kReceivingBody;
+      UpdateState(c, kReceivingBody);
       return RC_INCOMPLETE;
     default: // RC_OK, RC_ERR
       return r;
@@ -419,8 +429,8 @@ static void ClearRecvBuf(ElConnection *c) {
   // toRecv should be as large as possible for HTTP
 }
 void AppOnSend(ElConnection *c) {
-  if (c->toSend == 0) {
-    c->http.state = kReceivingHead;
+  if (c->toSend == 0 && c->http.state == kSending) { // TODO 再整理下状态机
+    UpdateState(c, kReceivingHead);
     ClearRecvBuf(c);
   }
 }
@@ -446,7 +456,10 @@ void AppOnRecv(ElConnection *c) {
       doClose = true;
       break;
     case RC_OK:
-      c->http.state = kSending;
+      if (c->http.state != kWaitSending) {
+        // 开始发送chunked response后状态kWaitSending不再变更
+        UpdateState(c, kSending);
+      }
       break;
     }
     break;
@@ -458,7 +471,7 @@ void AppOnRecv(ElConnection *c) {
       doClose = true;
       break;
     case RC_OK:
-      c->http.state = kSending;
+      UpdateState(c, kSending);
       break;
     }
     break;
