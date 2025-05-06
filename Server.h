@@ -6,7 +6,6 @@
 #include <stdint.h>
 #define MAX_CLIENT_NUM (2)
 #define SEND_BUF_LEN (256)
-#define RECV_BUF_LEN (1024)
 typedef enum {
   kReceivingHead, // 这里把从request line开始，到\r\n\r\n结束的部分统称为head
   kReceivingBody,
@@ -23,12 +22,16 @@ typedef struct ElConnection {
   // 先把buffer、应用层数据都放这里
   // 后面根据多协议、用户BYOB的需求重构吧
   int fd;
+
   unsigned char sendBuf[SEND_BUF_LEN];
   size_t toSend;  // sendBuf里还有多少要发
   size_t sendIdx; // 已经发了多少
-  unsigned char recvBuf[RECV_BUF_LEN];
-  size_t toRecv;    // 还有多少要收
-  size_t recvIdx;   // 已经收到多少
+
+  unsigned char *recvBuf;
+  size_t toRecv;          // 还有多少要收
+  size_t recvIdx;         // 已经收到多少
+  size_t recvBufCapacity; // recvBuf能存储多少数据
+
   bool closed;      // 是否已关闭，待删除
                     // (关闭后不管另一方是否还要处理，本方已不能处理)
   size_t totalRecv; // 目前仅用于统计

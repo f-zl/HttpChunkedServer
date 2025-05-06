@@ -17,3 +17,4 @@ void AppOnAccepted(ElConnection *c);
 void AppOnPollTimeout(ElServer *server);
 // 返回poll的timeout值，单位ms，-1为一直等待
 int AppCalcTimeout(ElServer *server);
+void AppOnClosing(ElConnection *c);

@@ -11,6 +11,7 @@
 #include <sys/socket.h>
 
 void EL_Close(ElConnection *c) {
+  AppOnClosing(c);
   close(c->fd);
   c->closed = true;
 }
@@ -81,7 +82,7 @@ static int CheckAccept(ElServer *server, struct pollfd *fds) {
 // 是否已经发成功，是否是后面再发，是否是其他错误
 // 调用者可以用toSend来检查
 static void DoSend(ElConnection *c) {
-  assert(c->sendIdx + c->toSend <= sizeof(c->sendBuf));
+  assert(c->sendIdx + c->toSend <= SEND_BUF_LEN);
   assert(c->toSend > 0);
   ssize_t r = send(c->fd, &c->sendBuf[c->sendIdx], c->toSend, 0);
   if (r < 0) {
@@ -116,7 +117,7 @@ bool EL_AddToSendBuffer(ElConnection *c, const void *data, size_t len) {
 }
 
 static void DoRecv(ElConnection *c) {
-  assert(c->recvIdx + c->toRecv <= sizeof(c->recvBuf));
+  assert(c->recvIdx + c->toRecv <= c->recvBufCapacity);
   assert(c->toRecv > 0);
   ssize_t r = recv(c->fd, &c->recvBuf[c->recvIdx], c->toRecv, 0);
   if (unlikely(r < 0)) {

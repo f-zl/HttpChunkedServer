@@ -34,8 +34,10 @@ static const char BAD_REQUEST_CONTENT_LENGTH_RESPONSE[79] =
 static const char NOT_FOUND_RESPONSE[77] =
     NOT_FOUND_LINE ALLOW_CORS_HEADER CONTENT_LENGTH_HEADER "0\r\n\r\n";
 
-#define MAX_CHUNK_LEN_DIGIT 3
+#define MAX_CHUNK_LEN_DIGIT (3)
 // 最多多少个hex char可以表示长度，3个则支持最长fff长度的chunk
+
+#define RECV_BUF_LEN (1024)
 
 void AppOnPeerClose(ElConnection *c) { EL_Close(c); }
 void AppOnError(ElConnection *c) { EL_Close(c); }
@@ -46,7 +48,12 @@ bool AppOnAccepting(ElServer *server, const struct sockaddr_storage *addr,
   (void)addrLen;
   return true;
 }
-void AppOnAccepted(ElConnection *c) { EL_SetupToRecv(c, RECV_BUF_LEN, 0); }
+
+void AppOnAccepted(ElConnection *c) {
+  c->recvBuf = malloc(RECV_BUF_LEN);
+  c->recvBufCapacity = RECV_BUF_LEN;
+  EL_SetupToRecv(c, RECV_BUF_LEN, 0);
+}
 void AppOnSend(ElConnection *c) { (void)c; }
 static bool is_version(SpanConstChar path) {
   const char *p = "/version";
@@ -451,3 +458,4 @@ int AppCalcTimeout(ElServer *server) {
   }
   return timeout;
 }
+void AppOnClosing(ElConnection *c) { free(c->recvBuf); }

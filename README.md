@@ -112,6 +112,29 @@ HTTP接口
   2. 可以环形缓存，每次都写入缓存的最后  
     send_to_buf也可能写到尾部，然后从头开始写
 
+### send buffer接口
+
+- AddToSendBuffer 把数据写入用户层的发缓存
+- SendToSocket 把用户层的发缓存数据用send发给OS
+
+### recv buffer接口
+
+- RecvFromSocket 用recv从OS接收数据到用户层的收缓存里
+- GetRecvdLen 当前收到了多少数据
+- ClearRecvBuf 清空当前收到的数据
+- memcpy/[] 读取数据内容
+
+### 怎么设计用户自己管理缓存？
+
+用户知道某个连接会有多少数据
+
+场景：接收大文件，不希望先从底层拷到app buffer，再从app buffer拷到文件缓存。  
+希望直接用文件缓存区作为app recv buffer
+
+需要indirection，从同一个缓存接口跳到不同的缓存实现  
+indirection可以简单点，就用一个缓存指针。  
+这个需要假设用户提供的缓存仍然是连续的，所以toRecv, recvIdx仍然是框架管理
+
 ## TODO
 
 - 完善单个Connection的状态机，图中加上所有状态变量
@@ -124,4 +147,3 @@ HTTP接口
 - 对socket做抽象，兼容winsock
 - 分层，event loop, protocol, user三层
 - 如果用户需要一套代码支持多protocol，则需要动态回调
-- 取名，接口加前缀
