@@ -167,9 +167,9 @@ static void CheckConnections(ElServer *server, struct pollfd fds[]) {
 // 新的连接和关闭都先保留在链表里，使得链表在循环中和pollfd保持一致
 // 循环结束后，需要根据连接、关闭情况更新链表
 // 成功则返回Connection * (用于后面PushBackFds)，否则返回NULL
-static ElConnection *CheckToAccept(ElServer *server) {
+static ElConnection *CheckToAccept(ElServer *server, FlNodeBase *beforeEnd) {
   if (server->toAccept != -1) {
-    FlNodeBase *node = FL_EmplaceFront(&server->connections.base);
+    FlNodeBase *node = FL_EmplaceAfter(&server->connections.base, beforeEnd);
     if (node != NULL) {
       ElConnection *c = &((ListNodeConnection *)node)->value;
       c->fd = server->toAccept;
@@ -211,7 +211,8 @@ static nfds_t UpdateConnectionListAndConstructPollFds(ElServer *server,
   // 遍历连接的链表，根据收发请求标记POLLIN, POLLOUT
 
   nfds_t i = 0;
-  for (FlNodeBase *it = FL_BeforeBegin(&server->connections.base);
+  FlNodeBase *it;
+  for (it = FL_BeforeBegin(&server->connections.base);
        it->next != FL_End(&server->connections.base);) {
     ElConnection *c = &((ListNodeConnection *)(it->next))->value;
     if (c->closed) {
@@ -222,8 +223,8 @@ static nfds_t UpdateConnectionListAndConstructPollFds(ElServer *server,
       it = it->next;
     }
   }
-
-  ElConnection *c = CheckToAccept(server);
+  // 为使顺序一致，list里新节点也加到最后
+  ElConnection *c = CheckToAccept(server, it);
   if (c != NULL) {
     PushBackFds(c, &fds[i]);
     ++i;

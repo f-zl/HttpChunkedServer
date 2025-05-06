@@ -109,7 +109,7 @@ function fileStatusStr(file) {
 	const lastModified = new Date(file.lastModified).toLocaleString()
 	return `name ${file.name} size ${sizeStr} lastModified ${lastModified}`
 }
-document.getElementById("fileInput").addEventListener("change", () => {
+function upload() {
 	if (fileInput.files.length !== 1) {
 		log("Please select a file to upload.")
 		return
@@ -132,4 +132,10 @@ document.getElementById("fileInput").addEventListener("change", () => {
 		})
 	}
 	reader.readAsArrayBuffer(file)
+}
+document.getElementById("fileInput").addEventListener("change", upload)
+document.getElementById("btnUpload").addEventListener("click", upload)
+document.getElementById("btnClear").addEventListener("click", () => {
+	log("")
+	lbFileStatus.innerText = ""
 })

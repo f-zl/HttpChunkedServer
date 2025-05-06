@@ -54,7 +54,6 @@ void AppOnAccepted(ElConnection *c) {
   c->recvBufCapacity = RECV_BUF_LEN;
   EL_SetupToRecv(c, RECV_BUF_LEN, 0);
 }
-void AppOnSend(ElConnection *c) { (void)c; }
 static bool is_version(SpanConstChar path) {
   const char *p = "/version";
   size_t l = strlen(p);
@@ -261,20 +260,69 @@ static void on_post_param(ElConnection *c, const unsigned char *body,
   }
 }
 #define MIN_IMAGE_SIZE (1)
-#define MAX_IMAGE_SIZE (100)
+#define MAX_IMAGE_SIZE (6 * 1024 * 1024)
+static unsigned char g_imageBuffer[MAX_IMAGE_SIZE];
+// keep the recvBuf switched by g_imageBuffer, so that it can be restored later
+static unsigned char *g_recvBuf;
+// 需要记录g_recvBuf里的headLen和bodyLen，从而可以知道要拷多少到g_imageBuffer
+static size_t g_headLen;
+static size_t g_bodyLen;
+static void VerifyImageBuffer(const unsigned char b[], int32_t len) {
+  if (len != 4 * 1024 * 1024) {
+    LOG_W("wrong len %d\n", len);
+    return;
+  }
+  uint32_t expect = 0;
+  for (size_t i = 0; i < 4 * 1024 * 1024; i += 4) {
+    uint32_t actual = ReadUint32LE(&b[i]);
+    if (actual != expect) {
+      LOG_W("wrong value %zu %x!=%x\n", i, actual, expect);
+      break;
+    }
+    ++expect;
+  }
+  LOG_D("verify done\n");
+}
 static void on_post_image(ElConnection *c, const unsigned char *body,
                           int32_t content_len) {
+  (void)body;
   LOG_D("POST /image %d", content_len);
-  for (int32_t i = 0; i < content_len; ++i) {
-    LOG_D(" %02x", body[i]);
-  }
+  // for (int32_t i = 0; i < content_len; ++i) {
+  //   LOG_D(" %02x", body[i]);
+  // }
   LOG_D("\n");
+
+  // TODO should also restore g_imageBuffer when connection closed
+  memcpy(g_imageBuffer, &g_recvBuf[g_headLen], g_bodyLen);
+  VerifyImageBuffer(g_imageBuffer, content_len);
+
   if (content_len >= MIN_IMAGE_SIZE && content_len <= MAX_IMAGE_SIZE) {
     EL_AddToSendBuffer(c, OK_CONTENT_LENGTH_RESPONSE,
                        sizeof(OK_CONTENT_LENGTH_RESPONSE));
   } else {
     EL_AddToSendBuffer(c, BAD_REQUEST_CONTENT_LENGTH_RESPONSE,
                        sizeof(BAD_REQUEST_CONTENT_LENGTH_RESPONSE));
+  }
+  c->recvBuf = g_recvBuf;
+  c->recvBufCapacity = RECV_BUF_LEN;
+}
+static void OnPostImageIncomplete(ElConnection *c, size_t headLen,
+                                  int32_t contentLen) {
+  // 用于测试多次接收文件
+  memset(g_imageBuffer, 0xcc, sizeof(g_imageBuffer));
+
+  size_t recvdBodyLen = c->recvIdx - headLen;
+  LOG_D("contentLen %d body len %zu incomplete\n", contentLen, recvdBodyLen);
+  if (contentLen >= MIN_IMAGE_SIZE && contentLen <= MAX_IMAGE_SIZE) {
+    g_recvBuf = c->recvBuf;
+    g_headLen = headLen;
+    g_bodyLen = recvdBodyLen;
+    c->recvBuf = g_imageBuffer;
+    EL_SetupToRecv(c, (size_t)contentLen, recvdBodyLen);
+    // 数据从recvBuf拷贝到imageBuf延后到body收完时进行
+    c->recvBufCapacity = sizeof(g_imageBuffer);
+  } else {
+    EL_Close(c); // 是否可以，是否还有其他的要做？
   }
 }
 static void process_post_request(ElConnection *c, SpanConstChar path,
@@ -323,6 +371,7 @@ static int ProcessHead(ElConnection *c, SpanConstChar method,
       // 是否要为body另开一个缓存？
       c->http.state = kReceivingBody;
       c->http.content_len = content_len;
+      OnPostImageIncomplete(c, head_len, content_len);
       return RC_INCOMPLETE;
     }
   } else {
@@ -349,12 +398,10 @@ static int OnRecvHead(ElConnection *c) {
     // if ok, recv next
     int r = ProcessHead(c, method, path, headers, num_headers, (size_t)pret);
     switch (r) {
-    case RC_OK:
-      return RC_OK;
     case RC_INCOMPLETE: // head is complete while full request not
       c->http.state = kReceivingBody;
       return RC_INCOMPLETE;
-    default: // RC_ERR
+    default: // RC_OK, RC_ERR
       return r;
     }
   } else if (pret == -2) { // incomplete
@@ -371,12 +418,20 @@ static void ClearRecvBuf(ElConnection *c) {
   c->toRecv = RECV_BUF_LEN;
   // toRecv should be as large as possible for HTTP
 }
+void AppOnSend(ElConnection *c) {
+  if (c->toSend == 0) {
+    c->http.state = kReceivingHead;
+    ClearRecvBuf(c);
+  }
+}
 static int on_recv_body(ElConnection *c) {
   if (c->recvIdx < (size_t)c->http.content_len) {
     return RC_INCOMPLETE;
   }
   // 收满body，可以处理
   // 根据on_recv_head的实现，只会是POST (header数据存到哪里？)
+  // FIXME 不一定是/image
+  on_post_image(c, g_imageBuffer, c->http.content_len);
   return RC_OK;
 }
 void AppOnRecv(ElConnection *c) {
@@ -391,15 +446,20 @@ void AppOnRecv(ElConnection *c) {
       doClose = true;
       break;
     case RC_OK:
-      ClearRecvBuf(c);
+      c->http.state = kSending;
       break;
     }
     break;
   case kReceivingBody:
     LOG_D("recv %zu in body state\n", c->recvIdx);
     rst = on_recv_body(c);
-    if (rst == RC_ERR) {
+    switch (rst) {
+    case RC_ERR:
       doClose = true;
+      break;
+    case RC_OK:
+      c->http.state = kSending;
+      break;
     }
     break;
   default: // 其他状态都不该收到数据

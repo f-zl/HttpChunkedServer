@@ -105,8 +105,7 @@ FlNodeBase *FL_InsertAfter(FList *l, FlNodeBase *node, const void *value) {
   return n;
 }
 FlNodeBase *FL_EraseAfter(FList *l, FlNodeBase *n) {
-  assert((l->len > 0) && (n != &l->beforeFirst) && (n != &l->afterLast) &&
-         (n != NULL) && IsValid(l));
+  assert((l->len > 0) && (n != &l->afterLast) && (n != NULL) && IsValid(l));
   --l->len;
   FlNodeBase *next = n->next;
   n->next = next->next;
