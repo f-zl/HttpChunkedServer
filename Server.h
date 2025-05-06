@@ -14,8 +14,8 @@ typedef enum {
 } HttpConnState;
 typedef struct {
   HttpConnState state;
-  size_t prevbuflen; // used by picohttpparser
-  int32_t content_len;
+  size_t prevBufLen; // used by picohttpparser
+  int32_t contentLen;
 } HttpState;
 struct ElServer;
 typedef struct ElConnection {
@@ -27,7 +27,7 @@ typedef struct ElConnection {
   size_t toSend;  // sendBuf里还有多少要发
   size_t sendIdx; // 已经发了多少
 
-  unsigned char *recvBuf;
+  unsigned char *recvBuf; // TODO 可以改成固定缓存+允许用户设置
   size_t toRecv;          // 还有多少要收
   size_t recvIdx;         // 已经收到多少
   size_t recvBufCapacity; // recvBuf能存储多少数据

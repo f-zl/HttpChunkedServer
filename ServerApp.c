@@ -54,7 +54,7 @@ void AppOnAccepted(ElConnection *c) {
   c->recvBufCapacity = RECV_BUF_LEN;
   EL_SetupToRecv(c, RECV_BUF_LEN, 0);
 }
-static bool is_version(SpanConstChar path) {
+static bool IsVersion(SpanConstChar path) {
   const char *p = "/version";
   size_t l = strlen(p);
   if (path.len != l) {
@@ -62,7 +62,7 @@ static bool is_version(SpanConstChar path) {
   }
   return memcmp(path.buf, p, l) == 0;
 }
-static bool is_periodic(SpanConstChar path) {
+static bool IsPeriodic(SpanConstChar path) {
   const char *p = "/periodic";
   size_t l = strlen(p);
   if (path.len != l) {
@@ -70,7 +70,7 @@ static bool is_periodic(SpanConstChar path) {
   }
   return memcmp(path.buf, p, l) == 0;
 }
-static bool is_get_param(SpanConstChar path, uint16_t *addr, uint16_t *len) {
+static bool IsGetParam(SpanConstChar path, uint16_t *addr, uint16_t *len) {
   // /param/00000000
   const char *p = "/param/";
   const size_t l = strlen(p);
@@ -92,7 +92,7 @@ static bool is_get_param(SpanConstChar path, uint16_t *addr, uint16_t *len) {
   *len = opt_len.value;
   return true;
 }
-static bool is_param(SpanConstChar path) {
+static bool IsParam(SpanConstChar path) {
   const char *p = "/param";
   size_t l = strlen(p);
   if (path.len != l) {
@@ -100,7 +100,7 @@ static bool is_param(SpanConstChar path) {
   }
   return memcmp(path.buf, p, l) == 0;
 }
-static bool is_image(SpanConstChar path) {
+static bool IsImage(SpanConstChar path) {
   const char *p = "/image";
   size_t l = strlen(p);
   if (path.len != l) {
@@ -108,7 +108,7 @@ static bool is_image(SpanConstChar path) {
   }
   return memcmp(path.buf, p, l) == 0;
 }
-static void send_content_length(ElConnection *c, size_t len) {
+static void SendContentLength(ElConnection *c, size_t len) {
   assert(len <= 9999);
   char s[8];
   size_t l = num_to_four_chars((int)len, s);
@@ -117,19 +117,19 @@ static void send_content_length(ElConnection *c, size_t len) {
   EL_AddToSendBuffer(c, s, l + 4);
 }
 // HTTP 200
-static void send_ok_response(ElConnection *c, const void *body,
-                             size_t body_len) { // 200
-  assert(body_len <= 9999);                     // 最大支持4 digits
+static void SendOkResponse(ElConnection *c, const void *body,
+                           size_t body_len) { // 200
+  assert(body_len <= 9999);                   // 最大支持4 digits
   if (body_len > 0) {
     EL_AddToSendBuffer(c, OK_CONTENT_LENGTH_RESPONSE, OK_CONTENT_LENGTH_LEN);
-    send_content_length(c, body_len);
+    SendContentLength(c, body_len);
     EL_AddToSendBuffer(c, body, body_len);
   } else {
     EL_AddToSendBuffer(c, OK_CONTENT_LENGTH_RESPONSE,
                        sizeof(OK_CONTENT_LENGTH_RESPONSE));
   }
 }
-static void send_chunk_with_data(ElConnection *c, const void *chunk, int len) {
+static void SendChunkWithData(ElConnection *c, const void *chunk, int len) {
   assert(len > 0 && len <= 0xfff); // MAX_CHUNK_LEN_DIGIT设定了最多3位
   char length_line[MAX_CHUNK_LEN_DIGIT + 2];
   // 需要根据len的实际值计算长度，写入length_line
@@ -177,53 +177,53 @@ typedef struct {
 } Param;
 static Param g_param = {0x12345678, 0x90abcdef};
 
-static void send_ok_chunked_response(ElConnection *c) {
+static void SendOkChunkedResponse(ElConnection *c) {
   EL_AddToSendBuffer(c, OK_CHUNKED_RESPONSE, sizeof(OK_CHUNKED_RESPONSE));
   uint32_t t = htonl(++g_tick);
-  send_chunk_with_data(c, &t, 4);
+  SendChunkWithData(c, &t, 4);
   c->server->lastSendTick = xTaskGetTickCount();
 }
 // HTTP 400
-static void send_bad_request_response(ElConnection *c, const void *body,
-                                      size_t body_len) {
+static void SendBadRequestResponse(ElConnection *c, const void *body,
+                                   size_t body_len) {
   assert(body_len <= 9999); // 最大支持4 digits
   if (body_len > 0) {
     EL_AddToSendBuffer(c, BAD_REQUEST_CONTENT_LENGTH_RESPONSE,
                        BAD_REQUEST_CONTENT_LENGTH_LEN);
-    send_content_length(c, body_len);
+    SendContentLength(c, body_len);
     EL_AddToSendBuffer(c, body, body_len);
   } else {
     EL_AddToSendBuffer(c, BAD_REQUEST_CONTENT_LENGTH_RESPONSE,
                        sizeof(BAD_REQUEST_CONTENT_LENGTH_RESPONSE));
   }
 }
-static void on_get_param(ElConnection *c, uint16_t addr, uint16_t len) {
+static void OnGetParam(ElConnection *c, uint16_t addr, uint16_t len) {
   if ((len > 0) && (addr + len <= sizeof(Param))) {
     char *p = (char *)&g_param;
-    send_ok_response(c, &p[addr], len);
+    SendOkResponse(c, &p[addr], len);
   } else {
-    send_bad_request_response(c, NULL, 0);
+    SendBadRequestResponse(c, NULL, 0);
   }
 }
-static void process_get_request(ElConnection *c, SpanConstChar path) {
-  if (is_version(path)) {
+static void ProcessGetRequest(ElConnection *c, SpanConstChar path) {
+  if (IsVersion(path)) {
     const char *p = "1.1.0 " __DATE__ " " __TIME__;
-    send_ok_response(c, p, strlen(p));
-  } else if (is_periodic(path)) {
-    send_ok_chunked_response(c);
+    SendOkResponse(c, p, strlen(p));
+  } else if (IsPeriodic(path)) {
+    SendOkChunkedResponse(c);
     UpdateState(c, kWaitSending);
   } else {
     uint16_t addr;
     uint16_t len;
-    if (is_get_param(path, &addr, &len)) { // 可能路径OK但参数误应该报另外的错
-      on_get_param(c, addr, len);
+    if (IsGetParam(path, &addr, &len)) { // 可能路径OK但参数误应该报另外的错
+      OnGetParam(c, addr, len);
     } else {
       // 404
       EL_AddToSendBuffer(c, NOT_FOUND_RESPONSE, sizeof(NOT_FOUND_RESPONSE));
     }
   }
 }
-static bool match_content_length(const char *s, size_t len) {
+static bool MatchContentLength(const char *s, size_t len) {
   const char *c = "content-length";
   if (len != strlen(c)) { // 是否要支持空白符？
     return false;
@@ -236,11 +236,11 @@ static bool match_content_length(const char *s, size_t len) {
   return true;
 }
 // -1表示有header但错误，-2表示没有这个header，其他表示content-length值(范围0~9999999)
-static int32_t find_content_length(struct phr_header headers[MAX_HDR_NUM],
-                                   size_t num_headers) {
+static int32_t FindContentLength(struct phr_header headers[MAX_HDR_NUM],
+                                 size_t num_headers) {
   for (size_t i = 0; i < num_headers; ++i) {
-    if (match_content_length(headers[i].name,
-                             headers[i].name_len)) { // 只看第1个，不检查重复
+    if (MatchContentLength(headers[i].name,
+                           headers[i].name_len)) { // 只看第1个，不检查重复
       int32_t content_len =
           chars_to_num(headers[i].value, headers[i].value_len);
       return content_len == -1 ? -1 : content_len;
@@ -248,13 +248,13 @@ static int32_t find_content_length(struct phr_header headers[MAX_HDR_NUM],
   }
   return -2;
 }
-static void on_post_param(ElConnection *c, const unsigned char *body,
-                          int32_t content_len) {
+static void OnPostParam(ElConnection *c, const unsigned char *body,
+                        int32_t content_len) {
   assert(content_len >= 0);
   const uint16_t header_len = 2;   // HTTP body里，取2字节用作地址信息
   if (content_len <= header_len) { // 只有header没有数值也是错误
     const char *p = "Wrong format";
-    send_bad_request_response(c, p, strlen(p));
+    SendBadRequestResponse(c, p, strlen(p));
     return;
   }
   const uint16_t addr = ReadUint16LE(body);
@@ -263,14 +263,15 @@ static void on_post_param(ElConnection *c, const unsigned char *body,
   if ((size_t)addr + (size_t)value_len <= sizeof(Param)) {
     char *p = (char *)&g_param;
     memcpy(&p[addr], &body[header_len], (size_t)value_len);
-    send_ok_response(c, NULL, 0);
+    SendOkResponse(c, NULL, 0);
   } else {
     const char *p = "Wrong value";
-    send_bad_request_response(c, p, strlen(p));
+    SendBadRequestResponse(c, p, strlen(p));
   }
 }
 #define MIN_IMAGE_SIZE (1)
 #define MAX_IMAGE_SIZE (6 * 1024 * 1024)
+// TODO add mutex for g_imageBuffer (flag mutex is enough, no OS mutex needed)
 static unsigned char g_imageBuffer[MAX_IMAGE_SIZE];
 // keep the recvBuf switched by g_imageBuffer, so that it can be restored later
 static unsigned char *g_recvBuf;
@@ -293,8 +294,8 @@ static void VerifyImageBuffer(const unsigned char b[], int32_t len) {
   }
   LOG_D("verify done\n");
 }
-static void on_post_image(ElConnection *c, const unsigned char *body,
-                          int32_t content_len) {
+static void OnPostImage(ElConnection *c, const unsigned char *body,
+                        int32_t content_len) {
   (void)body;
   LOG_D("POST /image %d", content_len);
   // for (int32_t i = 0; i < content_len; ++i) {
@@ -335,15 +336,14 @@ static void OnPostImageIncomplete(ElConnection *c, size_t headLen,
     EL_Close(c); // 是否可以，是否还有其他的要做？
   }
 }
-static void process_post_request(ElConnection *c, SpanConstChar path,
-                                 const unsigned char *body,
-                                 int32_t content_len) {
+static void ProcessPostRequest(ElConnection *c, SpanConstChar path,
+                               const unsigned char *body, int32_t content_len) {
   // POST body可传数据，如果有参数，用body传二进制数据
   assert(content_len >= 0 && content_len <= 9999999);
-  if (is_param(path)) {
-    on_post_param(c, body, content_len);
-  } else if (is_image(path)) {
-    on_post_image(c, body, content_len);
+  if (IsParam(path)) {
+    OnPostParam(c, body, content_len);
+  } else if (IsImage(path)) {
+    OnPostImage(c, body, content_len);
   } else {
     // 404
     EL_AddToSendBuffer(c, NOT_FOUND_RESPONSE, sizeof(NOT_FOUND_RESPONSE));
@@ -352,36 +352,36 @@ static void process_post_request(ElConnection *c, SpanConstChar path,
 static int ProcessHead(ElConnection *c, SpanConstChar method,
                        SpanConstChar path,
                        struct phr_header headers[MAX_HDR_NUM],
-                       size_t num_headers, size_t head_len) {
+                       size_t numHeaders, size_t headLen) {
   if (is_get(method)) {
     // process and send response
     // for simplicity, discard extra data
     // (or close connection?)
     // GET with body is not supported
     // more than one request at a time is not supported
-    if (c->recvIdx > head_len) {
+    if (c->recvIdx > headLen) {
       LOG_W("GET with extra data\n");
     }
-    process_get_request(c, path);
+    ProcessGetRequest(c, path);
     return RC_OK;
   } else if (is_post(method)) {
-    const int32_t content_len = find_content_length(headers, num_headers);
-    if (content_len < 0) {
-      LOG_W("Content-Length %d\n", content_len);
+    const int32_t contentLen = FindContentLength(headers, numHeaders);
+    if (contentLen < 0) {
+      LOG_W("Content-Length %d\n", contentLen);
       // send error response, or close connection?
       return RC_ERR;
-    } else if ((size_t)content_len <= (c->recvIdx - head_len)) {
+    } else if ((size_t)contentLen <= (c->recvIdx - headLen)) {
       // can be processed
       // 索性应用层不用header
-      process_post_request(c, path, &c->recvBuf[head_len], content_len);
+      ProcessPostRequest(c, path, &c->recvBuf[headLen], contentLen);
       return RC_OK;
     } else {
       // if is /image, copy data to image buffer, store future data there
       // 怎么存放header (不用存，用个flag知道是/image即可)
       // 是否要为body另开一个缓存？
       UpdateState(c, kReceivingBody);
-      c->http.content_len = content_len;
-      OnPostImageIncomplete(c, head_len, content_len);
+      c->http.contentLen = contentLen;
+      OnPostImageIncomplete(c, headLen, contentLen);
       return RC_INCOMPLETE;
     }
   } else {
@@ -396,17 +396,18 @@ static int OnRecvHead(ElConnection *c) {
   SpanConstChar path;
   int minor_version;
   struct phr_header headers[MAX_HDR_NUM];
-  size_t num_headers = MAX_HDR_NUM;
+  size_t numHeaders = MAX_HDR_NUM;
   // picohttpparser可以对一个stream反复调用 (但基本都要从头开始parse)
   int pret = phr_parse_request(
       (const char *)c->recvBuf, c->recvIdx, &method.buf, &method.len, &path.buf,
-      &path.len, &minor_version, headers, &num_headers, c->http.prevbuflen);
+      &path.len, &minor_version, headers, &numHeaders, c->http.prevBufLen);
   LOG_D("phr_parse=%d\n", pret);
   if (pret > 0) {
+    // pret here is the length of head (from "GET /" to "\r\n\r\n")
     // if err, close
     // if body incomplete, keep receving
     // if ok, recv next
-    int r = ProcessHead(c, method, path, headers, num_headers, (size_t)pret);
+    int r = ProcessHead(c, method, path, headers, numHeaders, (size_t)pret);
     switch (r) {
     case RC_INCOMPLETE: // head is complete while full request not
       UpdateState(c, kReceivingBody);
@@ -415,7 +416,7 @@ static int OnRecvHead(ElConnection *c) {
       return r;
     }
   } else if (pret == -2) { // incomplete
-    c->http.prevbuflen = c->recvIdx;
+    c->http.prevBufLen = c->recvIdx;
     return RC_INCOMPLETE;
   } else {
     LOG_W("header parse err\n");
@@ -434,14 +435,16 @@ void AppOnSend(ElConnection *c) {
     ClearRecvBuf(c);
   }
 }
-static int on_recv_body(ElConnection *c) {
-  if (c->recvIdx < (size_t)c->http.content_len) {
+static int OnRecvBody(ElConnection *c) {
+  if (c->recvIdx < (size_t)c->http.contentLen) {
+    assert(c->toRecv > 0);
     return RC_INCOMPLETE;
   }
   // 收满body，可以处理
   // 根据on_recv_head的实现，只会是POST (header数据存到哪里？)
   // FIXME 不一定是/image
-  on_post_image(c, g_imageBuffer, c->http.content_len);
+  // 是否保存header，然后重新走一遍parser？
+  OnPostImage(c, g_imageBuffer, c->http.contentLen);
   return RC_OK;
 }
 void AppOnRecv(ElConnection *c) {
@@ -465,7 +468,7 @@ void AppOnRecv(ElConnection *c) {
     break;
   case kReceivingBody:
     LOG_D("recv %zu in body state\n", c->recvIdx);
-    rst = on_recv_body(c);
+    rst = OnRecvBody(c);
     switch (rst) {
     case RC_ERR:
       doClose = true;
@@ -491,7 +494,7 @@ void AppOnPollTimeout(ElServer *server) {
     if (c->http.state == kWaitSending) {
       ++g_tick;
       uint32_t t = htonl(g_tick);
-      send_chunk_with_data(c, &t, 4);
+      SendChunkWithData(c, &t, 4);
       // TODO do not update if send fail
       server->lastSendTick = xTaskGetTickCount();
       // if (g_tick > 5) {
@@ -503,7 +506,7 @@ void AppOnPollTimeout(ElServer *server) {
 }
 static const uint16_t PERIOD_MS = 1000;
 // 是否存在监听周期数据的client
-static bool has_listening_client(ElServer *server) {
+static bool HasListeningClient(ElServer *server) {
   for (FlNodeBase *it = FL_Begin(&server->connections.base);
        it != FL_End(&server->connections.base); it = it->next) {
     ElConnection *c = &((ListNodeConnection *)it)->value;
@@ -514,7 +517,7 @@ static bool has_listening_client(ElServer *server) {
   return false;
 }
 // 距下次发送还有多少ms
-static int to_next(uint16_t period, TickType_t last_send_tick) {
+static int ToNext(uint16_t period, TickType_t last_send_tick) {
   TickType_t elapsed = GetElapsedMs(last_send_tick);
   if (elapsed >= (TickType_t)period) {
     return 0;
@@ -524,8 +527,8 @@ static int to_next(uint16_t period, TickType_t last_send_tick) {
 // 返回poll的timeout值，单位ms，-1为一直等待
 int AppCalcTimeout(ElServer *server) {
   int timeout;
-  if (has_listening_client(server)) {
-    timeout = to_next(PERIOD_MS, server->lastSendTick);
+  if (HasListeningClient(server)) {
+    timeout = ToNext(PERIOD_MS, server->lastSendTick);
   } else {
     timeout = -1;
   }
