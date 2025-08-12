@@ -148,3 +148,14 @@ indirection可以简单点，就用一个缓存指针。
 - 对socket做抽象，兼容winsock
 - 分层，event loop, protocol, user三层
 - 如果用户需要一套代码支持多protocol，则需要动态回调
+
+## Acknowledgement
+
+本工程使用了
+
+- [picohttpparser](https://github.com/h2o/picohttpparser.git)
+- [Unity](https://github.com/ThrowTheSwitch/Unity.git)
+
+参考了
+
+- [mongoose](https://github.com/cesanta/mongoose.git)
